@@ -373,6 +373,7 @@ class Mount:
         self._poll_th = None; self._running = False
         # Simulation interne
         self._saz=0.0; self._salt=2.0; self._staz=0.0; self._stalt=2.0
+        self._spark=None   # position de parking definie par :hQ (az, alt)
         self._sslewing=False; self._stracking=False; self._sspd=2.0
         self._stra=0.0; self._stdec=0.0
 
@@ -444,7 +445,7 @@ class Mount:
                 self._ser.reset_input_buffer()
                 self._ser.write((cmd+"#").encode())
                 if not reply: return ""
-                if cmd.startswith((":Sr", ":Sd", ":St", ":Sg", ":SG", ":SL", ":Bv", ":BV", ":U", ":Rg")):
+                if cmd.startswith((":Sr", ":Sd", ":St", ":Sg", ":SG", ":SL", ":Bv", ":BV", ":U", ":Rg", ":hQ")):
                     return self._ser.read(1).decode(errors='replace').strip()
                 r=b""; dl=time.time()+self.cfg.get("mount_timeout",0.5)
                 while time.time()<dl:
@@ -512,11 +513,12 @@ class Mount:
             az,alt=Astro.eq_to_horiz(self._stra,self._stdec,lst2,lat)
             self._saz=az; self._salt=alt; return "Synced#"
         if cmd==":hP":
-            self._staz=0.0; self._stalt=self.cfg.get("alt_min_deg",2.0)
+            if self._spark: self._staz, self._stalt = self._spark
+            else: self._staz=0.0; self._stalt=self.cfg.get("alt_min_deg",2.0)
             self._sslewing=True; self._stracking=False
             return "1"
         if cmd==":hR": self._stracking=True; return "1"
-        if cmd==":hQ": return "1"
+        if cmd==":hQ": self._spark=(self._saz,self._salt); return "1"
         if cmd.startswith(":R") and len(cmd)==3: return ""
         if cmd.startswith(":Mg"): return ""
         # v5.1 : :SC / :SL passent timeSet a True (dans ce sim, on l'ignore)
@@ -1779,6 +1781,7 @@ TRANSLATIONS = {
         "btn_stop": "■ STOP",
         "speed": "Speed :",
         "parking_north": "Park the mount",
+        "set_park_here": "Set park position here",
         
         # Mount Status Frame
         "mount_state_frame": "Mount status",
@@ -1909,6 +1912,9 @@ TRANSLATIONS = {
                           "Flash the mount with the latest firmware (Configurator > Firmware), then reconnect. "
                           "If it persists, check the site longitude and the PC time.",
         "msg_parking_confirm": "Send the mount to its park position?",
+        "msg_set_park_confirm": "Save the current position as the park position?",
+        "msg_set_park_ok": "Park position saved.",
+        "msg_set_park_fail": "Park position refused: mount slewing, on the flipped side of the pier, or not connected.",
         "msg_sync_invalid": "Invalid coordinates.",
         "msg_goto_not_connected": "Mount not connected.",
         "msg_goto_below_horizon": "{name}\nBelow horizon (Alt={alt:.1f}°)",
@@ -1990,6 +1996,7 @@ TRANSLATIONS = {
         "btn_stop": "■ STOP",
         "speed": "Vitesse :",
         "parking_north": "Parquer la monture",
+        "set_park_here": "Définir le parking ici",
         
         # Mount Status Frame
         "mount_state_frame": "État monture",
@@ -2120,6 +2127,9 @@ TRANSLATIONS = {
                           "Flashez la monture avec le dernier firmware (configurateur, section Firmware), puis reconnectez. "
                           "Si l'écart persiste, vérifiez la longitude du site et l'heure du PC.",
         "msg_parking_confirm": "Envoyer la monture à sa position de parking ?",
+        "msg_set_park_confirm": "Enregistrer la position actuelle comme position de parking ?",
+        "msg_set_park_ok": "Position de parking enregistrée.",
+        "msg_set_park_fail": "Position de parking refusée : monture en mouvement, du côté retourné du pilier, ou non connectée.",
         "msg_sync_invalid": "Coordonnées invalides.",
         "msg_goto_not_connected": "Monture non connectée.",
         "msg_goto_below_horizon": "{name}\nSous l'horizon (Alt={alt:.1f}°)",
@@ -2354,6 +2364,8 @@ class App(tk.Tk):
 
         self._btn_park=ttk.Button(self._frm_cmd,text="Parquer la monture",command=self._parking)
         self._btn_park.pack(fill=tk.X,pady=2)
+        self._btn_setpark=ttk.Button(self._frm_cmd,text="Définir le parking ici",command=self._set_park_here)
+        self._btn_setpark.pack(fill=tk.X,pady=2)
 
         # État
         self._frm_state=self._frm(p,"État monture"); self._frm_state.pack(fill=tk.X,padx=6,pady=4)
@@ -2833,6 +2845,18 @@ class App(tk.Tk):
             self.mount.parking()
             self._logw(":hP#  Parking","tx")
             self._status("Parking…" if lang == "fr" else "Parking...")
+
+    def _set_park_here(self):
+        lang = self.cfg.get("language", "fr")
+        t = TRANSLATIONS[lang]
+        if not messagebox.askyesno(t["set_park_here"], t["msg_set_park_confirm"]):
+            return
+        r = self.mount.set_park_position()
+        self._logw(f":hQ#  -> {r}","tx")
+        if r == "1":
+            self._status(t["msg_set_park_ok"])
+        else:
+            messagebox.showwarning(t["set_park_here"], t["msg_set_park_fail"])
 
     def _sync(self):
         lang = self.cfg.get("language", "fr")
@@ -3391,6 +3415,7 @@ class App(tk.Tk):
         self._btn_stop.configure(text=TRANSLATIONS[lang]["btn_stop"])
         self._lbl_speed.configure(text=TRANSLATIONS[lang]["speed"])
         self._btn_park.configure(text=TRANSLATIONS[lang]["parking_north"])
+        self._btn_setpark.configure(text=TRANSLATIONS[lang]["set_park_here"])
         
         # État monture
         self._frm_state.configure(text=f" {TRANSLATIONS[lang]['mount_state_frame']} ")

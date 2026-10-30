@@ -2512,7 +2512,23 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     if (alarmActive) { out.write('0'); return; }
     parked=false; enableMotors(true); saveStateToEEPROM(); out.write('1'); return;
   }
-  if(c1=='h'&&c2=='Q'){ out.write(parked?'1':'0'); return; }
+  // :hQ# (OnStep) : la position courante devient la position de parking.
+  // C'est ce qu'envoie Ekos/INDI ("Set current as park", SetCurrentPark()) et
+  // il attend '1'. Repondait l'etat parque, sans rien enregistrer : Ekos
+  // croyait le parking defini. Refuse en mouvement, et du cote retourne de
+  // l'allemande (Dec moteur hors -90..90, que loadStateFromEEPROM() rejette).
+  if(c1=='h'&&c2=='Q'){
+    noInterrupts();
+    long aP = azPos, lP = altPos;
+    interrupts();
+    double pAz  = fmod((double)aP / AZ_PPD, 360.0);
+    if (pAz < 0.0) pAz += 360.0;
+    double pAlt = (double)lP / ALT_PPD;
+    if (slewing || pAlt < -90.0 || pAlt > 90.0) { out.write('0'); return; }
+    parkAz = pAz; parkAlt = pAlt;
+    saveStateToEEPROM();
+    out.write('1'); return;
+  }
   if(c1=='h'&&c2=='C'){
     if (slewing) { out.write('0'); return; }
     out.write('1'); 
