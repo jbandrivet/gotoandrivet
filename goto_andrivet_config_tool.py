@@ -306,6 +306,9 @@ class ConfigToolApp(tk.Tk):
         if self.settings["mount_type"] in ("ForkEq", "GermanEq") and self.settings["park_alt"] == 0.0 and self.settings["park_az"] == 0.0:
             # If the user saved EQ but park is 0/0 (the new default), migrate it to 90
             self.settings["park_alt"] = 90.0
+            # Allemande : contrepoids en bas = axe horaire a 90 deg (AD = TSL - 6 h)
+            if self.settings["mount_type"] == "GermanEq":
+                self.settings["park_az"] = 90.0
 
     def save_local_settings(self):
         try:
@@ -884,15 +887,19 @@ class ConfigToolApp(tk.Tk):
             self.lbl_park_alt.config(text=t["park_dec"])
             self.lbl_park_az.config(text=t["park_ra"])
         
+        # Position de parking par defaut de chaque type (comme le firmware) :
+        # AltAz horizon nord, fourche tube au pole (AH 0), allemande contrepoids
+        # en bas (axe horaire a 90 deg). Elle ne suit le nouveau type que si
+        # elle etait restee au defaut d'un type.
+        defaults = {"AltAz": (0.0, 0.0), "ForkEq": (90.0, 0.0), "GermanEq": (90.0, 90.0)}
         try:
-            current_alt = float(self.park_alt_entry.get())
-            # Only auto-update if it looks like they were using the other default
-            if new_type == "AltAz" and current_alt == 90.0:
+            current = (float(self.park_alt_entry.get()), float(self.park_az_entry.get()))
+            if new_type in defaults and current in defaults.values():
+                p_alt, p_az = defaults[new_type]
                 self.park_alt_entry.delete(0, tk.END)
-                self.park_alt_entry.insert(0, "0.0")
-            elif new_type in ("ForkEq", "GermanEq") and current_alt == 0.0:
-                self.park_alt_entry.delete(0, tk.END)
-                self.park_alt_entry.insert(0, "90.0")
+                self.park_alt_entry.insert(0, str(p_alt))
+                self.park_az_entry.delete(0, tk.END)
+                self.park_az_entry.insert(0, str(p_az))
         except ValueError:
             pass
 

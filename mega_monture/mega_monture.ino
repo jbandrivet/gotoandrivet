@@ -119,6 +119,15 @@ static bool buzzerEnabled = true;
 static bool azReversed = false;
 float parkAlt = 90.0;
 float parkAz = 0.0;
+// Position de repos (home) selon le type de monture, en coordonnees moteur.
+// Allemande : contrepoids en bas, tube au pole. Dans le modele GEM du firmware
+// (az = angle horaire, plage 0..180 deg de chaque cote du pilier), c'est le
+// milieu de la course, az = 90 : AD = TSL - 6 h. az = 0 correspond au
+// contrepoids a l'horizontale, en butee de meridien.
+// Fourche : tube au pole, descente sur le meridien (az = 0, AD = TSL).
+// AltAz : horizon nord.
+static double homeAlt(uint8_t t) { return (t >= 1) ? 90.0 : 0.0; }
+static double homeAz(uint8_t t)  { return (t == 2) ? 90.0 : 0.0; }
 static bool altReversed = false;
 static uint8_t trackRate=0;
 static bool force_tracking_rebase = false;
@@ -231,6 +240,9 @@ static void saveStateToEEPROM() {
   eepromWrite(EEPROM_ADDR_BACKLASH_ALT, backlashAlt);
 }
 
+static void aa2rd(double alt, double az, long *rs, long *ds);
+static long azPosFromAz(double az);
+
 static void loadStateFromEEPROM() {
   if (EEPROM.read(EEPROM_ADDR_MAGIC) == EEPROM_MAGIC) {
     mountType = EEPROM.read(EEPROM_ADDR_MOUNT_TYPE);
@@ -257,7 +269,7 @@ static void loadStateFromEEPROM() {
     recalculatePPD();
     if(isnan(derotPPD) || derotPPD < 1.0) derotPPD = 100.0;
     if (isnan(parkAlt) || parkAlt < -90.0 || parkAlt > 90.0) parkAlt = (mountType >= 1) ? 90.0 : 0.0;
-    if (isnan(parkAz) || parkAz < 0.0 || parkAz > 360.0) parkAz = 0.0;
+    if (isnan(parkAz) || parkAz < 0.0 || parkAz > 360.0) parkAz = homeAz(mountType);
     
     if (isnan(siteLat) || siteLat < -90.0 || siteLat > 90.0 ||
         isnan(siteLon) || siteLon < -180.0 || siteLon > 180.0) {
@@ -290,8 +302,8 @@ static void loadStateFromEEPROM() {
     buzzerEnabled = true;
     azReversed = false;
     altReversed = false;
-    parkAlt = (mountType >= 1) ? 90.0 : 0.0;
-    parkAz = 0.0;
+    parkAlt = homeAlt(mountType);
+    parkAz = homeAz(mountType);
     derotEnabled = false;
     derotPPD = 100.0;
     focusEnabled = false;
@@ -304,13 +316,14 @@ static void loadStateFromEEPROM() {
 
   recalculatePPD();
 
-  currAz = 0.0;
-  currAlt = (mountType >= 1) ? 90.0 : 0.0;
-  azPos = 0;
+  // Monture declaree parquee : elle est a sa position de parking (et non a
+  // az = 0, faux en allemande parquee contrepoids en bas).
+  currAz = parkAz;
+  currAlt = parkAlt;
+  azPos = 0;                    // reference de azPosFromAz (hors GEM)
+  azPos = azPosFromAz(currAz);
   altPos = (long)(currAlt * ALT_PPD);
-
-  currDEC = (mountType >= 1) ? 90L * 3600L : 0L;
-  currRA = (long)(lst() * 3600.0);
+  aa2rd(currAlt, currAz, &currRA, &currDEC);
 
   trkRA = (double)currRA / 3600.0;
   trkDec = (double)currDEC / 3600.0;
@@ -847,7 +860,7 @@ static void updatePos() {
       if (tracking) {
         tracking = false;
         alarmActive = false;
-        slewToAA((mountType >= 1) ? 90.0 : 0.0, 0.0);
+        slewToAA(homeAlt(mountType), homeAz(mountType));
         alarmActive = true;
         parked = true;
         enableMotors(false);
@@ -1656,6 +1669,13 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
 
   // ============ GET COMMANDS ============
   if(c1=='D' && ci==2){ out.print(slewing ? "|#" : "#"); return; }
+  // Monture a l'arret (parquee ou suivi coupe) : la position n'est recalculee
+  // par personne, alors que son AD avance avec le TSL. On la recalcule a la
+  // lecture (sans updatePos() et ses effets de bord sur les butees).
+  if(c1=='G'&&(c2=='R'||c2=='D')&&!tracking&&!slewing){
+    aa2rd(currAlt,currAz,&currRA,&currDEC);
+    formatRaDec(currRA, currDEC);
+  }
   if(c1=='G'&&c2=='R'){ out.print(lxRA); return; }
   if(c1=='G'&&c2=='D'){ out.print(lxDEC); return; }
   if(c1=='G'&&c2=='A'){
@@ -1965,11 +1985,17 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   if(c1=='D'){ if(slewing)out.write(127); out.write('#'); return; }
 
   if(c1=='T'&&c2=='e'){
-    tracking=true; parked=false; enableMotors(true);
-    if (trkRA == 0.0 && trkDec == 0.0) {
+    // Suivi arrete (parking, :Td, demarrage) : on suit la ou pointe la
+    // monture. trkRA/trkDec gardaient sinon l'ancienne cible (dernier objet
+    // avant :hP, ou TSL du demarrage calcule avant le reglage de l'heure) et
+    // la correction de doTrack() y ramenait la monture. Pendant un GoTo,
+    // trkRA est la cible du GoTo : on n'y touche pas.
+    if (!tracking && !slewing) {
+      updatePos();
       trkRA = (double)currRA / 3600.0;
       trkDec = (double)currDEC / 3600.0;
     }
+    tracking=true; parked=false; enableMotors(true);
     out.write('1'); return;
   }
   if(c1=='T'&&c2=='d'){ tracking=false; out.write('1'); return; }
@@ -1993,11 +2019,17 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   // un mode inexistant. Pas de timeout non plus, puisqu'il y a une reponse.
   if(c1=='T'&&c2=='o'){ out.write('0'); return; }
   if(c1=='A'&&c2=='P'){
-    tracking=true; parked=false; enableMotors(true);
-    if (trkRA == 0.0 && trkDec == 0.0) {
+    // Suivi arrete (parking, :Td, demarrage) : on suit la ou pointe la
+    // monture. trkRA/trkDec gardaient sinon l'ancienne cible (dernier objet
+    // avant :hP, ou TSL du demarrage calcule avant le reglage de l'heure) et
+    // la correction de doTrack() y ramenait la monture. Pendant un GoTo,
+    // trkRA est la cible du GoTo : on n'y touche pas.
+    if (!tracking && !slewing) {
+      updatePos();
       trkRA = (double)currRA / 3600.0;
       trkDec = (double)currDEC / 3600.0;
     }
+    tracking=true; parked=false; enableMotors(true);
     saveStateToEEPROM(); return;
   }
   if(c1=='A'&&c2=='L'){ tracking=false; saveStateToEEPROM(); return; }
@@ -2076,8 +2108,12 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
       // Laissee au defaut de l'ancien type, elle suit le nouveau. Sinon, d'equatorial
       // en AltAz, le parking visait 90 deg, au-dessus de ALT_MAX : la monture se
       // declarait parquee sans avoir bouge.
-      if (newType != mountType && parkAz == 0.0 && parkAlt == ((mountType >= 1) ? 90.0 : 0.0))
-        parkAlt = (newType >= 1) ? 90.0 : 0.0;
+      // (az = 0 reste accepte en allemande : c'etait son defaut avant az = 90.)
+      if (newType != mountType && parkAlt == homeAlt(mountType)
+          && (parkAz == homeAz(mountType) || parkAz == 0.0)) {
+        parkAlt = homeAlt(newType);
+        parkAz  = homeAz(newType);
+      }
       mountType = newType;
       saveStateToEEPROM();
       out.print(F("1#")); return;
@@ -2180,8 +2216,8 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   if(c1=='h'&&c2=='C'){
     if (slewing) { out.write('0'); return; }
     out.write('1'); 
-    double pAlt = (mountType >= 1) ? 90.0 : 0.0;
-    double pAz = 0.0;
+    double pAlt = homeAlt(mountType);
+    double pAz = homeAz(mountType);
     long pRA, pDEC;
     aa2rd(pAlt, pAz, &pRA, &pDEC);
     inRA = pRA;
