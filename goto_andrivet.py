@@ -3650,16 +3650,17 @@ class App(tk.Tk):
 
     def _do_update(self):
         if not self._update_sha: return
-        t = TRANSLATIONS[self.cfg.get("language", "fr")]
+        lang = self.cfg.get("language", "fr"); t = TRANSLATIONS[lang]
         if not messagebox.askyesno("GotoAndrivet", t["update_confirm"]): return
-        self._status(t["update_running"]); self.update()
-        try:
-            mise_a_jour.apply(Path(__file__).resolve().parent, self._update_sha)
-        except Exception as e:
-            messagebox.showerror("GotoAndrivet", t["update_error"].format(err=e)); return
-        messagebox.showinfo("GotoAndrivet", t["update_done"])
-        self.mount.disconnect(); self.cfg.save()
-        mise_a_jour.restart()
+        self._status(t["update_running"])
+        def _ok():
+            self.mount.disconnect(); self.cfg.save()
+            mise_a_jour.restart()
+        def _err(e):
+            self._status("")
+            messagebox.showerror("GotoAndrivet", t["update_error"].format(err=e))
+        # Téléchargement dans un fil à part, derrière une fenêtre animée : l'interface ne se fige plus
+        mise_a_jour.installer_avec_attente(self, Path(__file__).resolve().parent, self._update_sha, lang, _ok, _err)
 
     def _about(self):
         t = TRANSLATIONS[self.cfg.get("language", "fr")]

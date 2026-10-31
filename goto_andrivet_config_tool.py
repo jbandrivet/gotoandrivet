@@ -367,13 +367,12 @@ class ConfigToolApp(tk.Tk):
     def _install_update(self):
         ans = messagebox.askyesno("Mise à jour", "Une nouvelle version est disponible ! Ceci va la télécharger et redémarrer le configurateur.\nContinuer ?")
         if ans:
-            try:
-                mise_a_jour.apply(Path(__file__).parent, getattr(self, 'remote_sha', None))
-            except Exception as e:
+            def _err(e):
                 messagebox.showerror("Erreur", f"Impossible de mettre à jour:\n{e}")
-                return
-            messagebox.showinfo("Succès", "Mise à jour réussie avec succès ! Le logiciel va maintenant redémarrer.")
-            mise_a_jour.restart()
+            # Téléchargement dans un fil à part, derrière une fenêtre animée ; redémarrage à la fin
+            lang = self.lang_var.get() if hasattr(self, "lang_var") else self.settings.get("language", "fr")
+            mise_a_jour.installer_avec_attente(self, Path(__file__).parent, getattr(self, 'remote_sha', None),
+                                               lang if lang in ("fr", "en") else "fr", None, _err)
 
     def build_ui(self):
         # Fonts
