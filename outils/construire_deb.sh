@@ -64,7 +64,7 @@ entry GotoMega.desktop "GotoAndrivet - Configurateur" \
 cat > "$root/usr/share/doc/gotoandrivet/copyright" <<'EOF'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: GotoAndrivet
-Source: https://github.com/jbandrivet/goto_mega
+Source: https://github.com/jbandrivet/gotoandrivet
 
 Files: *
 Copyright: Jean-Baptiste Andrivet
@@ -88,7 +88,7 @@ Depends: python3 (>= 3.10), python3-venv, python3-tk
 Suggests: astrometry.net, astrometry-data-tycho2
 Section: science
 Priority: optional
-Homepage: https://github.com/jbandrivet/goto_mega
+Homepage: https://github.com/jbandrivet/gotoandrivet
 Description: Carte du ciel, GoTo et configurateur pour monture GotoAndrivet
  GotoAndrivet pilote des montures de télescope AltAz, à fourche équatoriale
  ou équatoriales allemandes (protocole LX200/OnStep, cartes Arduino Mega ou

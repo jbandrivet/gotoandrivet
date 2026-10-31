@@ -2,7 +2,7 @@ name: Firmwares
 
 # Compile les trois firmwares (monture Mega, monture Teensy, raquette Teensy) et les publie avec leurs
 # sources dans la version « firmwares », derrière des liens stables :
-#   https://github.com/jbandrivet/goto_mega/releases/download/firmwares/<fichier>
+#   https://github.com/jbandrivet/gotoandrivet/releases/download/firmwares/<fichier>
 # Le configurateur compile et flashe lui-même les cartes ; ces fichiers servent si on ne peut pas l'utiliser.
 on:
   push:

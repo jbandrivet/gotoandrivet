@@ -335,7 +335,7 @@ class ConfigToolApp(tk.Tk):
             # Le logiciel est compilé (PyInstaller)
             messagebox.showinfo("Mise à jour", "La mise à jour automatique de la version compilée (.exe) arrivera bientôt !\nPour le moment, veuillez télécharger la nouvelle version sur GitHub Releases.")
             import webbrowser
-            webbrowser.open("https://github.com/jbandrivet/goto_mega/releases")
+            webbrowser.open("https://github.com/jbandrivet/gotoandrivet/releases")
         else:
             if not getattr(self, 'update_available', False):
                 messagebox.showinfo("Mise à jour", "Aucune nouvelle mise à jour n'est disponible.\nVotre logiciel est déjà à la dernière version !")

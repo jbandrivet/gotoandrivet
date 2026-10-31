@@ -31,7 +31,7 @@ from pathlib import Path
 
 import markdown
 
-REPO = "jbandrivet/goto_mega"
+REPO = "jbandrivet/gotoandrivet"
 SITE = "https://goto-andrivet.duckdns.org"          # adresse publique : liens canoniques, plan du site
 CONTACT = ("jeanbaptisteandrivet", "gmail.com")    # adresse de contact, en deux morceaux contre les robots
 GITHUB = f"https://github.com/{REPO}"
@@ -45,7 +45,7 @@ FICHIERS = {"GotoAndrivet.deb": f"{RELEASE}/GotoAndrivet.deb",
 for _carte, _ in CARTES:
     FICHIERS[f"{_carte}.hex"] = f"{FIRMWARES}/{_carte}.hex"
     FICHIERS[f"{_carte}-source.zip"] = f"{FIRMWARES}/{_carte}-source.zip"
-COMMANDE = "wget -qO- https://raw.githubusercontent.com/jbandrivet/goto_mega/main/installer.sh | sh"
+COMMANDE = "wget -qO- https://raw.githubusercontent.com/jbandrivet/gotoandrivet/main/installer.sh | sh"
 ICI = Path(__file__).resolve().parent
 
 # Documents publiés : fichier du dépôt -> (page, titre du menu)

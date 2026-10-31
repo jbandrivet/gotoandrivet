@@ -1,10 +1,10 @@
 #!/bin/sh
 # Installation de GotoAndrivet en une commande (Linux) :
-#   wget -qO- https://raw.githubusercontent.com/jbandrivet/goto_mega/main/installer.sh | sh
+#   wget -qO- https://raw.githubusercontent.com/jbandrivet/gotoandrivet/main/installer.sh | sh
 # Installe la carte du ciel et GoTo (goto_andrivet.py) et le configurateur dans ~/.goto_andrivet,
 # avec leur environnement Python, et met leurs raccourcis sur le Bureau. Rien n'est installé dans le système.
 set -e
-BASE=https://raw.githubusercontent.com/jbandrivet/goto_mega/main
+BASE=https://raw.githubusercontent.com/jbandrivet/gotoandrivet/main
 
 fetch() {
     if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"; else wget -qO "$2" "$1"; fi

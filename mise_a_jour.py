@@ -18,7 +18,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-REPO = "jbandrivet/goto_mega"
+REPO = "jbandrivet/gotoandrivet"
 VERSION_FILE = Path.home() / ".config" / "goto_andrivet" / "version.txt"
 KEEP = {"venv", ".git", "__pycache__", "astrometry_data"}
 _UA = {"User-Agent": "GotoAndrivet-Updater/1.0"}
@@ -87,7 +87,7 @@ def apply(app_dir, remote_sha=None):
             comment = z.comment.decode(errors="replace").strip()        # GitHub y met le commit de l'archive
         if not remote_sha and re.fullmatch(r"[0-9a-f]{40}", comment):
             remote_sha = comment
-        src = next(p for p in Path(tmp).iterdir() if p.is_dir())       # « goto_mega-main »
+        src = next(p for p in Path(tmp).iterdir() if p.is_dir())       # « gotoandrivet-main » (le nom du dossier n'importe pas)
         for item in src.iterdir():
             if item.name in KEEP:
                 continue

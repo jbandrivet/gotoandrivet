@@ -2,8 +2,8 @@ name: Installateur Linux
 
 # Construit le paquet GotoAndrivet.deb et Install_Goto_Universal (install_linux.py en un seul exécutable),
 # et les publie dans la version « installateur », derrière des liens stables :
-#   https://github.com/jbandrivet/goto_mega/releases/latest/download/GotoAndrivet.deb
-#   https://github.com/jbandrivet/goto_mega/releases/latest/download/Install_Goto_Universal
+#   https://github.com/jbandrivet/gotoandrivet/releases/latest/download/GotoAndrivet.deb
+#   https://github.com/jbandrivet/gotoandrivet/releases/latest/download/Install_Goto_Universal
 # Tous deux téléchargent la dernière version de main au moment d'installer : ils n'ont besoin d'être
 # reconstruits que si l'installateur lui-même change.
 on:
@@ -48,7 +48,7 @@ jobs:
 
           Sur les Ubuntu récents, le double-clic ne lance pas un programme téléchargé (il cherche une application dans le Centre d'applications) : passez par le clic droit.
           Autre possibilité, une seule commande dans un terminal :
-          `wget -qO- https://raw.githubusercontent.com/jbandrivet/goto_mega/main/installer.sh | sh`
+          `wget -qO- https://raw.githubusercontent.com/jbandrivet/gotoandrivet/main/installer.sh | sh`
 
           L'installateur télécharge toujours la dernière version du dépôt. Ensuite, le bouton « Mise à jour » des applications suffit.
           Prérequis : `sudo apt install python3-venv python3-tk`.

@@ -6,6 +6,6 @@
 set -e
 DEPOT=${DEPOT:-$HOME/goto_mega}
 SORTIE=${SORTIE:-/var/www/gotoandrivet}
-[ -d "$DEPOT/.git" ] || git clone -q https://github.com/jbandrivet/goto_mega.git "$DEPOT"
+[ -d "$DEPOT/.git" ] || git clone -q https://github.com/jbandrivet/gotoandrivet.git "$DEPOT"
 git -C "$DEPOT" pull -q --ff-only
 exec python3 "$DEPOT/site/generer_site.py" --depot "$DEPOT" --sortie "$SORTIE" --miroir
