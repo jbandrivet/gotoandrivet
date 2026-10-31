@@ -52,6 +52,7 @@ import math
 import json
 import re
 import logging
+import os
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -100,7 +101,8 @@ DEFAULTS = {
     "slew_speed_max":      25.0,
     "slew_speed_min":      0.5,
     "guide_speed":         0.25,
-    "mount_port":          "/dev/ttyUSB0",
+    "mount_port":          "auto",               # "auto" : port cherché à la connexion (Mount.find_port)
+    "mount_port_last":     "",                   # dernier port où la monture a répondu
     "mount_baud":          38400,                # v5.1 : aligne sur Mega v9.1 (optimisé à 38400)
     "mount_timeout":       0.5,
     "derot_enabled":       False,
@@ -431,10 +433,52 @@ class Mount:
         if self._ser and self._ser.is_open: self._ser.close()
         self.state.connected = False
 
+    # Identifiants USB (VID) : cartes de monture, puis adaptateurs série USB des clones.
+    USB_CARTES = {0x16C0: "Teensy", 0x2341: "Arduino", 0x2A03: "Arduino"}
+    USB_ADAPTATEURS = {0x1A86: "CH340", 0x0403: "FTDI", 0x10C4: "CP210x", 0x067B: "PL2303"}
+
+    @staticmethod
+    def usb_ports():
+        """Ports série USB [(port, nom)], cartes connues d'abord. Les ports série
+        internes du PC (ttyS…, sans identifiant USB) ne sont jamais une monture."""
+        if not HAS_SERIAL: return []
+        out = []
+        for p in serial.tools.list_ports.comports():
+            if p.vid is None: continue
+            nom = Mount.USB_CARTES.get(p.vid) or Mount.USB_ADAPTATEURS.get(p.vid) or (p.description or "USB")
+            rang = 0 if p.vid in Mount.USB_CARTES else 1 if p.vid in Mount.USB_ADAPTATEURS else 2
+            out.append((rang, p.device, nom))
+        out.sort()
+        return [(d, n) for _, d, n in out]
+
     @staticmethod
     def list_ports():
-        if not HAS_SERIAL: return []
-        return [p.device for p in serial.tools.list_ports.comports()]
+        return [d for d, _ in Mount.usb_ports()]
+
+    @staticmethod
+    def probe(port, baud, wait):
+        """Vrai si une monture OnStep répond à :GVP# sur ce port. Ouverture exclusive :
+        un port déjà pris (KStars/INDI, dérotateur) est sauté au lieu d'être perturbé."""
+        try:
+            with serial.Serial(port, baud, timeout=0.5, write_timeout=1.0, exclusive=True) as s:
+                time.sleep(wait)                  # le Mega redémarre à l'ouverture du port
+                s.reset_input_buffer(); s.write(b":GVP#")
+                return b"OnStep" in s.read_until(b"#", 32)
+        except Exception:
+            return False
+
+    @staticmethod
+    def find_port(baud, last="", exclude=()):
+        """Cherche la monture : dernier port qui a marché, puis cartes Teensy/Arduino,
+        puis adaptateurs USB. Renvoie (port, nom) ou (None, None)."""
+        ports = [(d, n) for d, n in Mount.usb_ports() if d not in exclude]
+        ports.sort(key=lambda dn: dn[0] != last)          # tri stable : le dernier port en tête
+        for d, n in ports:
+            if Mount.probe(d, baud, 0.3 if n == "Teensy" else 2.0):
+                return d, n
+        if len(ports) == 1:                               # un seul port USB : on le tente quand même
+            return ports[0]
+        return None, None
 
     # ── LX200 bas niveau ──────────────────────────────────────
     def _cmd(self, cmd, reply=True):
@@ -1910,6 +1954,10 @@ TRANSLATIONS = {
         
         # Messageboxes & Alerts
         "msg_conn_err": "Unable to connect to {port}",
+        "port_searching": "Looking for the mount on the USB ports…",
+        "port_found": "Mount found on {port} ({nom})",
+        "port_none": "No mount found on the USB ports. Pick the port in the list (or type it), then Connect.",
+        "port_missing": "{port} does not exist (unplugged?): automatic search",
         "msg_lst_offset": "The mount's sidereal time differs from the PC's by {off:+.0f} min: GoTos will miss their targets.\n\n"
                           "Flash the mount with the latest firmware (Configurator > Firmware), then reconnect. "
                           "If it persists, check the site longitude and the PC time.",
@@ -2125,6 +2173,10 @@ TRANSLATIONS = {
         
         # Messageboxes & Alerts
         "msg_conn_err": "Impossible de se connecter à {port}",
+        "port_searching": "Recherche de la monture sur les ports USB…",
+        "port_found": "Monture trouvée sur {port} ({nom})",
+        "port_none": "Aucune monture trouvée sur les ports USB. Choisissez le port dans la liste (ou tapez-le), puis Connecter.",
+        "port_missing": "{port} n'existe pas (débranché ?) : recherche automatique",
         "msg_lst_offset": "L'heure sidérale de la monture diffère de celle du PC de {off:+.0f} min : les GoTo vont manquer leur cible.\n\n"
                           "Flashez la monture avec le dernier firmware (configurateur, section Firmware), puis reconnectez. "
                           "Si l'écart persiste, vérifiez la longitude du site et l'heure du PC.",
@@ -2193,7 +2245,7 @@ class App(tk.Tk):
         self._update_sha = None
         self._dv  = {"speed": tk.DoubleVar(value=self.cfg.get("slew_speed_default", 2.0)), "mag": tk.DoubleVar(value=10.0),
                      "mapm": tk.DoubleVar(value=6.5)}
-        self._sv  = {"port": tk.StringVar(value=self.cfg.get("mount_port","/dev/ttyUSB0")),
+        self._sv  = {"port": tk.StringVar(value=self._port_initial()),
                      "baud": tk.StringVar(value=str(self.cfg.get("mount_baud",38400))),
                      "dport":tk.StringVar(value=self.cfg.get("derot_port","/dev/ttyUSB1")),
                      "filt": tk.StringVar(value="Tous"),
@@ -2316,8 +2368,8 @@ class App(tk.Tk):
         r=tk.Frame(self._frm_conn,bg=BG2); r.pack(fill=tk.X,pady=2)
         self._lbl_port=tk.Label(r,text="Port :",bg=BG2,fg=DIM,font=FS)
         self._lbl_port.pack(side=tk.LEFT)
-        ports=Mount.list_ports() or ["/dev/ttyUSB0","/dev/ttyACM0","/dev/ttyUSB1"]
-        self._pcb=ttk.Combobox(r,textvariable=self._sv["port"],values=ports,width=14,font=FS)
+        # « Auto » cherche la monture à la connexion ; on peut aussi choisir ou taper un port.
+        self._pcb=ttk.Combobox(r,textvariable=self._sv["port"],values=["Auto"]+Mount.list_ports(),width=14,font=FS)
         self._pcb.pack(side=tk.LEFT,padx=4)
         ttk.Button(r,text="↺",width=3,command=self._refresh_ports).pack(side=tk.LEFT)
 
@@ -2676,7 +2728,30 @@ class App(tk.Tk):
         threading.Thread(target=self._conn_worker,args=(port,baud,sim),daemon=True).start()
 
     def _conn_worker(self, port, baud, sim):
+        t = TRANSLATIONS[self.cfg.get("language", "fr")]
+        choix = port.strip()
+        auto = choix.lower() in ("auto", "")
+        if not sim and not auto and sys.platform != "win32" and not os.path.exists(choix):
+            self._logw(t["port_missing"].format(port=choix), "err"); auto = True
+        if not sim and auto:
+            self._logw(t["port_searching"], "info")
+            exclure = set()
+            if self.derot.connected and self.derot.kind == "serie":
+                exclure.add(self._sv["dport"].get())
+            port, nom = Mount.find_port(baud, self.cfg.get("mount_port_last", ""), exclure)
+            if not port:
+                self._logw(t["port_none"], "err")
+                def _rien():
+                    self._rv["conn"].set("⬤ ERREUR" if self.cfg.get("language", "fr") == "fr" else "⬤ ERROR")
+                    self._status(t["port_none"], RED)
+                    messagebox.showerror(t["conn_frame"], t["port_none"])
+                self.after(0, _rien); return
+            self._logw(t["port_found"].format(port=port, nom=nom), "rx")
         ok=self.mount.connect(port,baud,sim=sim)
+        if ok and not sim:
+            # Retenir le choix (« auto » ou le port choisi) et le port qui a répondu
+            self.cfg.set("mount_port", "auto" if auto else port)
+            self.cfg.set("mount_port_last", port); self.cfg.save()
         # v5.1 : envoyer automatiquement la date/heure courante après connexion
         # pour que le Mega lève son flag 'F' (time-not-set) et autorise les goto.
         if ok and not sim:
@@ -2718,8 +2793,14 @@ class App(tk.Tk):
         self._logw("Déconnecté." if lang == "fr" else "Disconnected.","info")
 
     def _refresh_ports(self):
-        ports=Mount.list_ports() or ["/dev/ttyUSB0","/dev/ttyACM0"]
-        self._pcb["values"]=ports
+        self._pcb["values"]=["Auto"]+Mount.list_ports()
+
+    def _port_initial(self):
+        """Port affiché au démarrage : celui des réglages s'il existe encore, sinon « Auto »."""
+        p = str(self.cfg.get("mount_port", "auto")).strip()
+        if not p or p.lower() == "auto": return "Auto"
+        if sys.platform != "win32" and not os.path.exists(p): return "Auto"
+        return p
 
     # ── Dérotateur et focuseur : type choisi, connexion ─────────
     def _kinds(self, which):

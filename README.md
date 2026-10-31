@@ -33,6 +33,8 @@ wget -qO- https://raw.githubusercontent.com/jbandrivet/goto_mega/main/installer.
 
 Prérequis pour l'installateur et la commande (le paquet .deb les installe tout seul) : `sudo apt install python3-venv python3-tk`. Pour le module caméra : `sudo apt install astrometry.net astrometry-data-tycho2` et le SDK caméra de ZWO.
 
+**Connexion de la monture** : dans la carte du ciel, laissez le port sur **Auto** et cliquez sur **Connecter**. La carte du ciel essaie d'abord le dernier port qui a marché, puis les cartes Teensy et Arduino, puis les adaptateurs série USB (CH340, FTDI, CP210x, PL2303), et garde celui où la monture répond. Les ports déjà pris (KStars, dérotateur) sont sautés. Si la recherche ne trouve rien, choisissez le port dans la liste, ou tapez-le, par exemple `/dev/ttyACM0`.
+
 ---
 
 ## Structure du Projet
