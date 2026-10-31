@@ -2140,7 +2140,10 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     out.print(F("Model Cleared#")); return;
   }
   if(c1=='C'&&c2=='M'){
-    if(!timeSet) { out.print(F("Time not set#")); return; }
+    // Reponse OnStep (driver INDI lx200_OnStep) : "N/A#" = sync faite,
+    // "E<chiffre>#" = refus. Toute autre reponse donne dans Ekos
+    // "Unexpected return on sync call!" et fait echouer l'alignement.
+    if(!timeSet) { out.print(F("E9#")); return; }   // 9 = erreur non precisee (heure non reglee)
     double ra_h=inRA/3600.0, dec_d=inDEC/3600.0;
     
     // MODELE N-ETOILES
@@ -2181,7 +2184,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     synced=true; updatePos();
     if (tracking) force_tracking_rebase = true;
     saveStateToEEPROM();
-    out.print(F("Synced#")); return;
+    out.print(F("N/A#")); return;
   }
   if(c1=='C'&&c2=='S'){
     if(!timeSet) { out.print(F("N/A#")); return; }

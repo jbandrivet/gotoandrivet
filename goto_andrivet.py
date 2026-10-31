@@ -511,7 +511,7 @@ class Mount:
         if cmd==":CM":
             now2=datetime.now(timezone.utc); lst2=Astro.lst(now2,lon)
             az,alt=Astro.eq_to_horiz(self._stra,self._stdec,lst2,lat)
-            self._saz=az; self._salt=alt; return "Synced#"
+            self._saz=az; self._salt=alt; return "N/A#"
         if cmd==":hP":
             if self._spark: self._staz, self._stalt = self._spark
             else: self._staz=0.0; self._stalt=self.cfg.get("alt_min_deg",2.0)
@@ -638,7 +638,9 @@ class Mount:
         ra, dec = Astro.precess(ra, dec)
         self._cmd(f":Sr{Astro.fmt_ra_lx(ra)}", reply=False)
         self._cmd(f":Sd{Astro.fmt_dec_lx(dec)}", reply=False)
-        return self._cmd(":CM").rstrip('#')
+        # Réponse OnStep : "N/A" = sync faite, "E<n>" = refus (voir firmware)
+        resp = self._cmd(":CM").rstrip('#')
+        return "OK" if resp == "N/A" else resp
 
     def parking(self):
         # v5.1 : :hP toujours (le fallback :PK n'est plus géré par aucune
