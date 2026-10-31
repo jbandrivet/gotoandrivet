@@ -338,18 +338,42 @@ class ConfigToolApp(tk.Tk):
             webbrowser.open("https://github.com/jbandrivet/gotoandrivet/releases")
         else:
             if not getattr(self, 'update_available', False):
-                messagebox.showinfo("Mise à jour", "Aucune nouvelle mise à jour n'est disponible.\nVotre logiciel est déjà à la dernière version !")
+                # Le bouton dit « Vérifier » : on interroge GitHub maintenant. La vérification du
+                # démarrage ne suffit pas (version sortie depuis, ou réseau absent à l'ouverture).
+                self.update_btn.config(text="Recherche en cours…", state="disabled")
+                threading.Thread(target=self._check_then_update, daemon=True).start()
                 return
-                
-            ans = messagebox.askyesno("Mise à jour", "Une nouvelle version est disponible ! Ceci va la télécharger et redémarrer le configurateur.\nContinuer ?")
-            if ans:
-                try:
-                    mise_a_jour.apply(Path(__file__).parent, getattr(self, 'remote_sha', None))
-                except Exception as e:
-                    messagebox.showerror("Erreur", f"Impossible de mettre à jour:\n{e}")
-                    return
-                messagebox.showinfo("Succès", "Mise à jour réussie avec succès ! Le logiciel va maintenant redémarrer.")
-                mise_a_jour.restart()
+            self._install_update()
+
+    def _check_then_update(self):
+        try:
+            available, remote, _ = mise_a_jour.check(Path(__file__).parent)
+        except Exception as e:
+            def _err(err=str(e)):
+                self.update_btn.config(text="Vérifier les mises à jour", state="normal")
+                messagebox.showerror("Mise à jour", f"Impossible de joindre GitHub :\n{err}\n\nVérifiez la connexion à Internet.")
+            self.after(0, _err); return
+        def _ui():
+            if available:
+                self.update_available = True; self.remote_sha = remote
+                self.update_btn.config(text="● Mise à jour disponible !", bg="#ffcccc", fg="red",
+                                       font=("MS Sans Serif", 9, "bold"), state="normal")
+                self._install_update()
+            else:
+                self.update_btn.config(text="Vérifier les mises à jour", state="normal")
+                messagebox.showinfo("Mise à jour", "Aucune nouvelle mise à jour n'est disponible.\nVotre logiciel est déjà à la dernière version !")
+        self.after(0, _ui)
+
+    def _install_update(self):
+        ans = messagebox.askyesno("Mise à jour", "Une nouvelle version est disponible ! Ceci va la télécharger et redémarrer le configurateur.\nContinuer ?")
+        if ans:
+            try:
+                mise_a_jour.apply(Path(__file__).parent, getattr(self, 'remote_sha', None))
+            except Exception as e:
+                messagebox.showerror("Erreur", f"Impossible de mettre à jour:\n{e}")
+                return
+            messagebox.showinfo("Succès", "Mise à jour réussie avec succès ! Le logiciel va maintenant redémarrer.")
+            mise_a_jour.restart()
 
     def build_ui(self):
         # Fonts
