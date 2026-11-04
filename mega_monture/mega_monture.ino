@@ -109,6 +109,9 @@ static bool   haveAltAzTarget=false;
 static double trkRA=0.0, trkDec=0.0;
 static volatile bool tracking=false; // Volatile because read in ISR
 static volatile bool slewing=false;  // Volatile because read in ISR
+// Arret demande pendant un GoTo. slewing reste vrai jusqu'a l'arret reel, freinage
+// compris : :D#, l'ISR de suivi et les gardes de :MS/:hP voient la monture en mouvement.
+static volatile bool slewAbort=false;
 static bool synced=false;
 static bool parked=false;
 static bool atHome=false;
@@ -840,10 +843,14 @@ static void formatRaDec(long ra_s, long dec_s) {
           (int)(ad/3600),(int)((ad%3600)/60),(int)(ad%60));
 }
 
-static void updatePos() {
-  currAz=(double)azPos/AZ_PPD;
+// currAz/currAlt depuis les compteurs de pas, sans les effets de bord de updatePos().
+static void axesFromSteps() {
+  noInterrupts();
+  long aP = azPos, lP = altPos;
+  interrupts();
+  currAz=(double)aP/AZ_PPD;
   while(currAz<0)currAz+=360.0; while(currAz>=360)currAz-=360.0;
-  currAlt=(double)altPos/ALT_PPD;
+  currAlt=(double)lP/ALT_PPD;
   if (mountType == 0) {
     if(currAlt < -90.0) currAlt = -90.0;
     if(currAlt >  90.0) currAlt =  90.0;
@@ -851,6 +858,10 @@ static void updatePos() {
     while(currAlt < -180.0) currAlt += 360.0;
     while(currAlt >  180.0) currAlt -= 360.0;
   }
+}
+
+static void updatePos() {
+  axesFromSteps();
   aa2rd(currAlt,currAz,&currRA,&currDEC);
   formatRaDec(currRA, currDEC);
 
@@ -909,7 +920,7 @@ static void slewServeOne(Stream& in, Print& out, char* buf, uint8_t& bi) {
     buf[bi]='\0';
     if(bi>0 && buf[0]==':') {
       if(buf[1]=='Q' || buf[1]=='K') {
-        slewing = false;
+        slewAbort = true;
       }
       processCmd(buf, bi, out);
     }
@@ -961,8 +972,10 @@ static long azPosFromAz(double az) {
   return (long)((cur + wrap180(az - cur)) * AZ_PPD);
 }
 
+static void clk();
+
 static int slewToAA(double tAlt, double tAz) {
-  if (alarmActive) return 0;
+  if (alarmActive || slewing) return 0;
   double startPhysAlt = getPhysicalAlt();
   double targetAlt = tAlt;
   if (mountType >= 1) {
@@ -988,6 +1001,9 @@ static int slewToAA(double tAlt, double tAz) {
     return 0;
   }
   limitHit=false;
+  // currAz/currAlt datent du dernier updatePos(), jusqu'a 200 ms de suivi plus tot, et
+  // plus du tout rafraichis apres :Td. Le trajet doit partir de la position reelle.
+  axesFromSteps();
   double azD=azSlewDelta(tAz);
   
   long azS=(long)(azD*AZ_PPD);
@@ -1005,6 +1021,7 @@ static int slewToAA(double tAlt, double tAz) {
   long deltaDEC=endDEC-startDEC;
 
   long azStart=azPos, altStart=altPos;
+  slewAbort=false;
   enableMotors(true); slewing=true;
   // DIR pose apres slewing=true : tant que le drapeau n'est pas leve, l'ISR
   // de suivi peut encore emettre un pas et reprendre la main sur la broche.
@@ -1036,7 +1053,6 @@ static int slewToAA(double tAlt, double tAz) {
 
   unsigned long dl;
   unsigned long lastUpdTime=millis();
-  unsigned long lastI=0;
   bool interrupted=false;
   bool interrupting=false;
 
@@ -1044,15 +1060,24 @@ static int slewToAA(double tAlt, double tAz) {
   static char sbRj [CMD_MAX]; static uint8_t sbiRj=0;
   sbiUsb=0; sbiRj=0;
 
-  unsigned long err = maxS / 2;
+  // maxS raccourcit en cas d'abandon ; le rapport entre les axes, lui, ne doit pas
+  // changer : bresS reste le denominateur. azCnt/altCnt comptent les impulsions
+  // reellement emises, seule source de la position a l'arrivee comme a l'abandon.
+  const unsigned long bresS = maxS;
+  unsigned long azCnt = 0, altCnt = 0;
+  unsigned long err = bresS / 2;
   bool azIsMajor = (aAS >= aLS);
 
   for(unsigned long i=0;i<maxS;i++){
     unsigned long loopStart = micros();
-    lastI = i;
 
     if(accel == 0) {
       dl = minDelay;
+    } else if(interrupting) {
+      // Avant le test de l'acceleration : un abandon en debut de rampe doit freiner.
+      unsigned long remaining = maxS - 1 - i;
+      int idx = (int)((remaining * 99UL) / accel);
+      dl = ramp_table[idx];
     } else if(i < accel) {
       int idx = (int)((i * 99UL) / accel);
       dl = ramp_table[idx];
@@ -1065,18 +1090,18 @@ static int slewToAA(double tAlt, double tAz) {
     }
 
     if (azIsMajor) {
-      stepPulse(AZ_STEP);
+      stepPulse(AZ_STEP); azCnt++;
       err += aLS;
-      if (err >= maxS) {
-        err -= maxS;
-        stepPulse(ALT_STEP);
+      if (err >= bresS) {
+        err -= bresS;
+        stepPulse(ALT_STEP); altCnt++;
       }
     } else {
-      stepPulse(ALT_STEP);
+      stepPulse(ALT_STEP); altCnt++;
       err += aAS;
-      if (err >= maxS) {
-        err -= maxS;
-        stepPulse(AZ_STEP);
+      if (err >= bresS) {
+        err -= bresS;
+        stepPulse(AZ_STEP); azCnt++;
       }
     }
 
@@ -1087,13 +1112,13 @@ static int slewToAA(double tAlt, double tAz) {
     unsigned long nowMs = millis();
     if(i == 0 || i == maxS - 1 || nowMs - lastUpdTime >= 200){
       lastUpdTime = nowMs;
-      long azLive  = azStart  + (long)((double)azS  * i / maxS);
-      long altLive = altStart + (long)((double)altS * i / maxS);
+      long azLive  = azStart  + ((azS  >= 0) ? (long)azCnt  : -(long)azCnt);
+      long altLive = altStart + ((altS >= 0) ? (long)altCnt : -(long)altCnt);
       currAz = (double)azLive / AZ_PPD;
       while(currAz<0)currAz+=360.0; while(currAz>=360)currAz-=360.0;
       currAlt = (double)altLive / ALT_PPD;
-      long iRA=startRA+(long)((double)deltaRA*i/maxS);
-      long iDEC=startDEC+(long)((double)deltaDEC*i/maxS);
+      long iRA=startRA+(long)((double)deltaRA*i/bresS);
+      long iDEC=startDEC+(long)((double)deltaDEC*i/bresS);
       formatRaDec(iRA, iDEC);
 
       double physAlt = getPhysicalAlt();
@@ -1117,11 +1142,10 @@ static int slewToAA(double tAlt, double tAz) {
       }
     }
 
-    bool wasSlewing = slewing;
     if ((i & 31) == 0) {
       slewServeOne(Serial,  Serial,  sbUsb, sbiUsb);
       slewServeOne(Serial3, Serial3, sbRj,  sbiRj);
-      if(!slewing && wasSlewing && !interrupting) { 
+      if(slewAbort && !interrupting) { 
         interrupting = true;
         interrupted = true; 
         unsigned long remaining_slew = maxS - i;
@@ -1130,8 +1154,6 @@ static int slewToAA(double tAlt, double tAz) {
         
         if (decelSteps > 0) {
           maxS = i + decelSteps;
-          if (i < aAS) aAS = maxS;
-          if (i < aLS) aLS = maxS;
         } else {
           break;
         }
@@ -1142,14 +1164,18 @@ static int slewToAA(double tAlt, double tAz) {
     if(dl > elapsed) delayMicroseconds(dl - elapsed);
   }
 
-  unsigned long azDone  = (lastI + 1 < aAS) ? (lastI + 1) : aAS;
-  unsigned long altDone = (lastI + 1 < aLS) ? (lastI + 1) : aLS;
-  long azDelta  = (azS  >= 0) ?  (long)azDone  : -(long)azDone;
-  long altDelta = (altS >= 0) ?  (long)altDone : -(long)altDone;
+  long azDelta  = (azS  >= 0) ?  (long)azCnt  : -(long)azCnt;
+  long altDelta = (altS >= 0) ?  (long)altCnt : -(long)altCnt;
   azPos  = azStart  + azDelta;
   altPos = altStart + altDelta;
 
-  slewing=false; updatePos();
+  // L'horloge ne tourne que dans loop() : sans ce rattrapage, l'AD lue ici serait
+  // en retard de toute la duree du trajet.
+  clk();
+  slewAbort=false; slewing=false; updatePos();
+  // Abandon : le suivi repart d'ici, pas de la cible precedente, que :MS ne remplace
+  // qu'en cas d'arrivee.
+  if (interrupted && tracking) force_tracking_rebase = true;
   saveStateToEEPROM();
   if(!interrupted && maxS > 0) playArrivalMelody();
   return interrupted ? 0 : 1;
