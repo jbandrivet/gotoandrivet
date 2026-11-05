@@ -3,6 +3,7 @@ import time
 import threading
 import math
 import tkinter as tk
+import tactile_wayland
 from tkinter import ttk, messagebox
 import cv2
 import numpy as np
@@ -417,4 +418,5 @@ class AutoguideSpectroApp:
 if __name__ == "__main__":
     root = tk.Tk()
     app = AutoguideSpectroApp(root)
+    tactile_wayland.brancher(root)
     root.mainloop()

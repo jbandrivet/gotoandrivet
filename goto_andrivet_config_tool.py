@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Auteur : Andrivet Jean-Baptiste
 import tkinter as tk
+import tactile_wayland
 from tkinter import ttk
 from tkinter import messagebox
 import serial
@@ -2832,5 +2833,6 @@ finally:
 
 if __name__ == "__main__":
     app = ConfigToolApp()
+    tactile_wayland.brancher(app)
     app.mainloop()
 

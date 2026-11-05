@@ -4,6 +4,7 @@ import serial
 import serial.tools.list_ports
 import threading
 import tkinter as tk
+import tactile_wayland
 from tkinter import ttk, messagebox
 
 try:
@@ -252,4 +253,5 @@ class BacklashMeasureApp:
 if __name__ == "__main__":
     root = tk.Tk()
     app = BacklashMeasureApp(root)
+    tactile_wayland.brancher(root)
     root.mainloop()

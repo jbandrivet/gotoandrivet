@@ -4,6 +4,7 @@ import math
 import subprocess
 import threading
 import tkinter as tk
+import tactile_wayland
 from tkinter import ttk, messagebox
 import re
 from datetime import datetime
@@ -375,4 +376,5 @@ app.mainloop()
 if __name__ == "__main__":
     root = tk.Tk()
     app = AutoModelApp(root)
+    tactile_wayland.brancher(root)
     root.mainloop()

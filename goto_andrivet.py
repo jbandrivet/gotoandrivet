@@ -45,6 +45,7 @@ CORRECTIONS v5.1 (alignement protocoles avec Mega v9.0+) :
 
 # ── Imports standard ──────────────────────────────────────────
 import tkinter as tk
+import tactile_wayland
 from tkinter import ttk, messagebox, filedialog
 import threading
 import time
@@ -3678,4 +3679,5 @@ class App(tk.Tk):
 # ================================================================
 if __name__ == "__main__":
     app = App()
+    tactile_wayland.brancher(app)
     app.mainloop()

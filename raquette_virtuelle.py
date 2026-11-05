@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Auteur : Andrivet Jean-Baptiste
 import tkinter as tk
+import tactile_wayland
 
 import serial
 import serial.tools.list_ports
@@ -1634,4 +1635,5 @@ class VirtualTeensyApp(tk.Tk):
 
 if __name__ == "__main__":
     app = VirtualTeensyApp()
+    tactile_wayland.brancher(app)
     app.mainloop()
