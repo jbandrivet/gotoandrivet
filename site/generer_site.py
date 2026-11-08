@@ -70,14 +70,16 @@ MENU = (("index.html", "Accueil"), ("telecharger.html", "Télécharger"), ("docu
 LIENS = (("OnStep", "https://onstep.groups.io/g/main/wiki"), ("KStars et Ekos", "https://kstars.kde.org/fr/"),
          ("Stellarium", "https://stellarium.org/fr/"), ("Astrometry.net", "https://astrometry.net/"),
          ("PHD2 Guiding", "https://openphdguiding.org/"), ("INDI", "https://indilib.org/"))
-BADGES = (("LINUX", "inside", "#000", "#ffcc00"), ("PYTHON", "powered", "#306998", "#ffd43b"),
+BADGES = (("LINUX", "inside", "#000", "#ffcc00"), ("WINDOWS", "aussi !", "#0078d7", "#fff"),
+          ("PYTHON", "powered", "#306998", "#ffd43b"),
           ("GPL v3", "libre !", "#a00", "#fff"), ("ARDUINO", "&amp; Teensy", "#00979d", "#fff"))
 JOURNAUX = Path("/var/log/nginx")
 
 # Description de chaque page pour les moteurs de recherche (balise description et aperçus de partage)
 DESCRIPTIONS = {
-    "index.html": "GotoAndrivet, contrôleur GoTo libre et gratuit pour télescopes : carte du ciel, GoTo, caméra ZWO, "
-                  "astrométrie, guidage, dérotateur et focuseur, montures AltAz et équatoriales, Arduino Mega ou Teensy.",
+    "index.html": "GotoAndrivet, contrôleur GoTo libre et gratuit pour télescopes, sous Linux et Windows : carte du ciel, "
+                  "GoTo, caméra ZWO, astrométrie, guidage, dérotateur et focuseur, montures AltAz et équatoriales, "
+                  "Arduino Mega ou Teensy.",
     "telecharger.html": "Télécharger GotoAndrivet pour Linux (paquet .deb pour Ubuntu et Debian, installateur pour les "
                         "autres distributions, installation en une commande) et pour Windows (.exe autonomes).",
     "documentation.html": "Documentation de GotoAndrivet : installation, structure du projet, câblage de la monture, "
@@ -96,12 +98,14 @@ DESCRIPTIONS = {
 FONCTIONS = (
     ("✦", "Carte du ciel et GoTo", "Étoiles, constellations, planètes, Messier, NGC, IC et Caldwell, précessés à la date. "
      "Un clic sur un objet, et la monture y va."),
-    ("◉", "Caméra et astrométrie", "Caméra ZWO, photos FITS, résolution locale du champ : la monture se recale toute seule "
+    ("◉", "Caméra et astrométrie (Linux)", "Caméra ZWO, photos FITS, résolution locale du champ : la monture se recale toute seule "
      "après chaque GoTo et construit son modèle de pointage."),
-    ("◎", "Guidage", "Deuxième caméra, calibration automatique, corrections envoyées par le PC à la monture, "
+    ("◎", "Guidage (Linux)", "Deuxième caméra, calibration automatique, corrections envoyées par le PC à la monture, "
      "courbe des erreurs et dithering entre les poses."),
     ("↻", "Dérotateur et focuseur", "Compensation de la rotation de champ en AltAz, angle de cadrage en équatoriale, "
      "focuseur intégré ou ZWO EAF."),
+    ("⊞", "Linux et Windows", "Paquet .deb ou installateur sous Linux, trois .exe sans installation sous Windows. "
+     "Même monture, mêmes firmwares, mise à jour d'un clic sur les deux."),
     ("▣", "Deux firmwares", "Arduino Mega 2560 ou Teensy 4.1, protocole LX200/OnStep compatible avec KStars, Ekos et INDI."),
     ("☰", "Raquette physique", "Teensy 4.1 et écran 20 × 4 : catalogues, GoTo, parking, suivi, sans ordinateur."),
     ("⚙", "Configurateur", "Rapports d'engrenage, micro-pas, vitesses, type de monture, et flashage des cartes "
@@ -453,11 +457,14 @@ def page_telecharger(sortie, version):
         return f'<a class="bouton" href="{FICHIERS[nom]}">► {texte}</a><p class="petit">depuis GitHub</p>'
     contenu = f"""<section class="panneau">
 <h1>Télécharger</h1>
-<p>La carte du ciel avec le GoTo, la caméra et le guidage, et le configurateur de la monture s'installent
-ensemble, dans votre dossier personnel, sans toucher au système. Ensuite, le bouton « Mise à jour » des
-applications suffit.</p>
+<p>GotoAndrivet marche sous <a href="#linux"><strong>Linux</strong></a> (choix 1 à 3) et sous
+<a href="#windows"><strong>Windows</strong></a> (choix 4). La monture et ses firmwares sont les mêmes :
+une carte flashée une fois sert avec les deux.</p>
+<p>Sous Linux, la carte du ciel avec le GoTo, la caméra et le guidage, et le configurateur de la monture
+s'installent ensemble, dans votre dossier personnel, sans toucher au système. Sous Windows, trois .exe à
+copier suffisent. Ensuite, sur les deux, le bouton « Mise à jour » des applications suffit.</p>
 </section>
-<section class="panneau choix">
+<section class="panneau choix" id="linux">
 <h2><span class="pastille">1</span> Ubuntu et Debian : le paquet .deb</h2>
 <p>Le plus simple.</p>
 {bouton("GotoAndrivet.deb", "GotoAndrivet.deb")}
@@ -482,7 +489,7 @@ GotoAndrivet s'installe dans votre dossier personnel (quelques minutes), puis s'
 <p>Dans un terminal :</p>
 <pre><code>{html.escape(COMMANDE)}</code></pre>
 </section>
-<section class="panneau choix">
+<section class="panneau choix" id="windows">
 <h2><span class="pastille">4</span> Windows : trois .exe</h2>
 <p>Chaque programme est un seul fichier : rien à installer, double-cliquez. La monture est trouvée toute seule
 sur son port COM.</p>
@@ -709,9 +716,10 @@ def page_accueil(commits, version):
 <h1>Bienvenue sur le site de GotoAndrivet !</h1>
 <p>GotoAndrivet pilote votre télescope : monture <strong>AltAz</strong>, à <strong>fourche équatoriale</strong>
 ou <strong>équatoriale allemande</strong>, avec une carte <strong>Arduino Mega</strong> ou <strong>Teensy</strong>.
-Sur l'ordinateur, une carte du ciel envoie la monture sur n'importe quel objet, et s'occupe de la caméra,
-de l'astrométrie et du guidage.</p>
-<p class="centre"><a class="bouton" href="telecharger.html">► Télécharger GotoAndrivet</a></p>
+Sur l'ordinateur, <strong>sous Linux ou Windows</strong>, une carte du ciel envoie la monture sur n'importe quel
+objet ; sous Linux, elle s'occupe aussi de la caméra, de l'astrométrie et du guidage.</p>
+<p class="centre"><a class="bouton" href="telecharger.html#linux">► Télécharger pour Linux</a>
+<a class="bouton" href="telecharger.html#windows">► Télécharger pour Windows</a></p>
 </section>
 <section class="panneau">
 <h2>★ Ce que fait GotoAndrivet ★</h2>
