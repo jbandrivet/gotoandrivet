@@ -20,5 +20,6 @@ cp src/windows/lanceur.py src/windows/gotoandrivet.spec src/windows/fabriquer.ba
 git -C "$DEPOT" rev-parse --short=7 HEAD > "$P/fabrication/version_git.txt"
 python3 "$ICI/icones.py" src/icons "$P/fabrication"
 cp -r "$PY312" "$P/Py312"
+VBoxManage sharedfolder remove "vm windows" --name goto --transient 2>/dev/null || true   # partage d'une fabrication précédente
 VBoxManage sharedfolder add "vm windows" --name goto --hostpath "$P" --transient --automount --auto-mount-point "T:"
 echo "Prêt (version $(cat "$P/fabrication/version_git.txt")). Dans Windows : cmd /c T:\\fabrication\\fabriquer.bat"
