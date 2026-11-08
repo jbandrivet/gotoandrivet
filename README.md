@@ -37,6 +37,13 @@ Prérequis pour l'installateur et la commande (le paquet .deb les installe tout 
 
 ---
 
+## Windows
+
+Trois `.exe` autonomes (carte du ciel, configurateur, raquette virtuelle), sans installation :
+[release `windows`](https://github.com/jbandrivet/gotoandrivet/releases/tag/windows) ou
+[page Télécharger du site](https://goto-andrivet.duckdns.org/telecharger.html). Caméras ZWO, EAF et
+astrométrie n'y sont pas disponibles. Fabrication : dossier [`windows/`](windows/LISEZMOI.txt).
+
 ## Structure du Projet
 
 * **`goto_andrivet.py`** : L'application principale en Python (interface graphique Tkinter avec carte du ciel interactive : étoiles, constellations, Soleil, Lune et planètes, catalogues Messier/NGC/IC/Caldwell, dérotateur et mise à jour en ligne).

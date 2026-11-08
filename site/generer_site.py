@@ -37,11 +37,17 @@ CONTACT = ("jeanbaptisteandrivet", "gmail.com")    # adresse de contact, en deux
 GITHUB = f"https://github.com/{REPO}"
 RELEASE = f"{GITHUB}/releases/latest/download"
 FIRMWARES = f"{GITHUB}/releases/download/firmwares"
+WINDOWS = f"{GITHUB}/releases/download/windows"     # .exe fabriqués par windows/preparer_vm.sh
+EXE_WINDOWS = (("GotoAndrivet_Carte_du_ciel.exe", "Carte du ciel et GoTo"),
+               ("GotoAndrivet_Configurateur.exe", "Configurateur de la monture"),
+               ("GotoAndrivet_Raquette.exe", "Raquette virtuelle"))
 CARTES = (("mega_monture", "Monture, Arduino Mega 2560"), ("teensy_monture", "Monture, Teensy 4.1"),
           ("teensy_raquette", "Raquette, Teensy 4.1"))
 # Fichiers copiés sur le site depuis les publications GitHub : nom -> adresse
 FICHIERS = {"GotoAndrivet.deb": f"{RELEASE}/GotoAndrivet.deb",
             "Install_Goto_Universal": f"{RELEASE}/Install_Goto_Universal"}
+for _exe, _ in EXE_WINDOWS:
+    FICHIERS[_exe] = f"{WINDOWS}/{_exe}"
 for _carte, _ in CARTES:
     FICHIERS[f"{_carte}.hex"] = f"{FIRMWARES}/{_carte}.hex"
     FICHIERS[f"{_carte}-source.zip"] = f"{FIRMWARES}/{_carte}-source.zip"
@@ -72,8 +78,8 @@ JOURNAUX = Path("/var/log/nginx")
 DESCRIPTIONS = {
     "index.html": "GotoAndrivet, contrôleur GoTo libre et gratuit pour télescopes : carte du ciel, GoTo, caméra ZWO, "
                   "astrométrie, guidage, dérotateur et focuseur, montures AltAz et équatoriales, Arduino Mega ou Teensy.",
-    "telecharger.html": "Télécharger GotoAndrivet pour Linux : paquet .deb pour Ubuntu et Debian, installateur pour les "
-                        "autres distributions ou installation en une commande.",
+    "telecharger.html": "Télécharger GotoAndrivet pour Linux (paquet .deb pour Ubuntu et Debian, installateur pour les "
+                        "autres distributions, installation en une commande) et pour Windows (.exe autonomes).",
     "documentation.html": "Documentation de GotoAndrivet : installation, structure du projet, câblage de la monture, "
                           "cartes Mega et Teensy, flashage et matériel compatible.",
     "raquette.html": "Mode d'emploi de la raquette Teensy de GotoAndrivet : menus, catalogues, GoTo, parking et suivi "
@@ -233,7 +239,7 @@ def donnees_structurees():
     return json.dumps({
         "@context": "https://schema.org", "@type": "SoftwareApplication", "name": "GotoAndrivet",
         "description": DESCRIPTIONS["index.html"], "url": f"{SITE}/", "inLanguage": "fr",
-        "applicationCategory": "UtilitiesApplication", "operatingSystem": "Linux",
+        "applicationCategory": "UtilitiesApplication", "operatingSystem": "Linux, Windows",
         "downloadUrl": f"{SITE}/telecharger.html", "softwareHelp": f"{SITE}/documentation.html",
         "license": "https://www.gnu.org/licenses/gpl-3.0.html", "sameAs": GITHUB,
         "author": {"@type": "Person", "name": "Jean-Baptiste Andrivet"},
@@ -475,6 +481,19 @@ GotoAndrivet s'installe dans votre dossier personnel (quelques minutes), puis s'
 <h2><span class="pastille">3</span> En une commande</h2>
 <p>Dans un terminal :</p>
 <pre><code>{html.escape(COMMANDE)}</code></pre>
+</section>
+<section class="panneau choix">
+<h2><span class="pastille">4</span> Windows : trois .exe</h2>
+<p>Chaque programme est un seul fichier : rien à installer, double-cliquez. La monture est trouvée toute seule
+sur son port COM.</p>
+{"".join(bouton(nom, nom) for nom, _ in EXE_WINDOWS)}
+<ul>
+{"".join(f"<li><strong>{html.escape(nom)}</strong> : {html.escape(texte)}</li>" for nom, texte in EXE_WINDOWS)}
+</ul>
+<p class="petit">Si Windows affiche « Windows a protégé votre ordinateur », cliquez sur <strong>Informations
+complémentaires</strong> puis <strong>Exécuter quand même</strong> : les .exe ne sont pas signés.
+Pas disponibles sous Windows : caméras ZWO, focuseur EAF, astrométrie et outils caméra.
+Les .exe ne se mettent pas à jour tout seuls : le bouton de mise à jour prévient quand il faut revenir ici.</p>
 </section>
 <section class="panneau">
 <h2>Firmwares des cartes</h2>

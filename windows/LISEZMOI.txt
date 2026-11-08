@@ -1,0 +1,30 @@
+GotoAndrivet pour Windows
+=========================
+
+GotoAndrivet_Carte_du_ciel.exe    la carte du ciel et le GoTo
+GotoAndrivet_Configurateur.exe    le réglage de la monture
+GotoAndrivet_Raquette.exe         la raquette virtuelle
+
+Chaque .exe est autonome : copiez-le où vous voulez et double-cliquez.
+Le démarrage prend quelques secondes.
+
+La monture (Arduino Mega, clone ou Teensy) est trouvée toute seule sur son port COM.
+
+Pas disponible sous Windows : caméras ZWO, focuseur EAF et dérotateur ZWO, astrométrie (solve-field),
+modèle automatique, autoguidage spectro, mise en station par caméra, réglage de l'horloge du PC.
+Pour flasher une carte, arduino-cli doit être installé et trouvable par Windows.
+
+Les .exe ne se mettent pas à jour tout seuls : le bouton de mise à jour prévient quand une version
+plus récente existe. Téléchargement : https://goto-andrivet.duckdns.org/telecharger.html
+ou https://github.com/jbandrivet/gotoandrivet/releases/tag/windows
+
+
+Fabriquer les .exe (dossier windows/ du dépôt)
+----------------------------------------------
+Sur Linux, avec une machine VirtualBox Windows nommée « vm windows », allumée :
+  1. windows/preparer_vm.sh      (copie du dernier commit + Python Windows dans un dossier partagé T:)
+  2. dans Windows : Win+R, puis  cmd /c T:\fabrication\fabriquer.bat
+     Les .exe arrivent dans ~/.cache/gotoandrivet-windows/partage/sortie.
+  3. publier : gh release upload windows ~/.cache/gotoandrivet-windows/partage/sortie/*.exe --clobber
+Le dossier C:\GotoBuild de la machine sert à cette fabrication.
+On ne fabrique pas sous Wine : numpy 2 y plante (ucrtbase).
