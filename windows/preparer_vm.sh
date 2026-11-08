@@ -18,7 +18,7 @@ for d in mega_monture teensy_monture teensy_raquette icons; do cp -r "src/$d" "$
 cp src/*.py "$P/src/"
 cp src/windows/lanceur.py src/windows/gotoandrivet.spec src/windows/fabriquer.bat "$P/fabrication/"
 git -C "$DEPOT" rev-parse --short=7 HEAD > "$P/fabrication/version_git.txt"
-python3 "$ICI/icones.py" src/icons "$P/fabrication"
+cp src/windows/carte.ico src/windows/config.ico "$P/fabrication/"     # refaites par icones.py si les .svg changent
 cp -r "$PY312" "$P/Py312"
 VBoxManage sharedfolder remove "vm windows" --name goto --transient 2>/dev/null || true   # partage d'une fabrication précédente
 VBoxManage sharedfolder add "vm windows" --name goto --hostpath "$P" --transient --automount --auto-mount-point "T:"

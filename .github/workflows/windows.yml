@@ -1,0 +1,55 @@
+name: Windows (.exe)
+
+# Fabrique les trois .exe Windows (dossier windows/) et les publie dans la release « windows » :
+#   https://github.com/jbandrivet/gotoandrivet/releases/tag/windows
+# version.txt (le commit des .exe) est envoyé en dernier : le bouton de mise à jour des .exe le lit
+# pour savoir s'il y a du nouveau, donc il ne doit changer qu'une fois les .exe en ligne.
+# La release n'est pas « latest » : releases/latest/download reste celle de l'installateur Linux.
+on:
+  push:
+    branches: [ main ]
+    paths: [ '*.py', 'mega_monture/**', 'teensy_monture/**', 'teensy_raquette/**', 'icons/**', 'windows/**',
+             '.github/workflows/windows.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-exe
+  cancel-in-progress: true
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Fabrication
+      shell: bash
+      run: |
+        python -m pip install --disable-pip-version-check pyinstaller pyserial pillow numpy requests ephem
+        git rev-parse --short=7 HEAD > windows/version_git.txt
+        export SRC="$PWD"
+        cd windows
+        python -m PyInstaller --noconfirm --clean --distpath ../dist_win --workpath ../build_win gotoandrivet.spec
+        ls -l ../dist_win
+
+    - name: Publication
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        cd dist_win
+        cp ../windows/LISEZMOI.txt .
+        cp ../windows/version_git.txt version.txt
+        sha256sum GotoAndrivet_*.exe > SHA256SUMS.txt
+        cat SHA256SUMS.txt version.txt
+        gh release view windows > /dev/null 2>&1 || gh release create windows --latest=false \
+          --title "GotoAndrivet pour Windows" --notes "Trois .exe autonomes : voir LISEZMOI.txt."
+        gh release upload windows GotoAndrivet_*.exe SHA256SUMS.txt LISEZMOI.txt --clobber
+        gh release upload windows version.txt --clobber

@@ -13,8 +13,10 @@ from pathlib import Path
 ICI = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 VERSION = (ICI / "version_git.txt").read_text().strip()
 OUTILS_CAMERA = {"auto_model_zwo", "autoguide_spectro_zwo", "measure_backlash_zwo", "polar_alignment_ui"}
-MESSAGE_MAJ = ("Une version plus récente existe, mais la version Windows ne se met pas à jour toute seule. "
-               "Téléchargez les nouveaux .exe sur https://goto-andrivet.duckdns.org/telecharger.html")
+SITE = "https://goto-andrivet.duckdns.org/telecharger.html"
+RELEASE = "https://github.com/jbandrivet/gotoandrivet/releases/download/windows"
+EXE = ("GotoAndrivet_Carte_du_ciel.exe", "GotoAndrivet_Configurateur.exe", "GotoAndrivet_Raquette.exe")
+_UA = {"User-Agent": "GotoAndrivet-Windows/1.0"}
 
 
 def adapter_subprocess():
@@ -37,22 +39,109 @@ def adapter_subprocess():
     subprocess.Popen, subprocess.run = Popen, run_adapte
 
 
+# ── Mise à jour des .exe ──────────────────────────────────────
+# La release « windows » de GitHub est refaite par le workflow windows.yml à chaque commit qui touche
+# le programme : les .exe, SHA256SUMS.txt, puis version.txt (le commit des .exe), publié en dernier.
+# Windows interdit d'écraser un .exe qui tourne, mais permet de le renommer : l'ancien devient
+# « .old » (effacé au démarrage suivant) et le nouveau prend sa place. Les .exe GotoAndrivet rangés
+# dans le même dossier sont mis à jour ensemble.
+
+def _lire(url, timeout=10):
+    import urllib.request
+    with urllib.request.urlopen(urllib.request.Request(url, headers=_UA), timeout=timeout) as r:
+        return r.read()
+
+
+def version_publiee():
+    return _lire(f"{RELEASE}/version.txt").decode("ascii", "replace").strip()[:7]
+
+
+def nettoyer_anciens():
+    """Efface les .old d'une mise à jour précédente (encore verrouillés si l'ancien programme tourne)."""
+    dossier = Path(sys.executable).parent
+    for nom in EXE:
+        try: (dossier / (nom + ".old")).unlink()
+        except OSError: pass
+
+
+def appliquer(_app_dir=None, _sha=None, progress=None):
+    """Remplace les .exe du dossier par ceux de la release. Lève une exception en cas d'échec,
+    sans rien changer tant que tous les fichiers ne sont pas téléchargés et vérifiés."""
+    import hashlib, urllib.request
+    def signale(etape, frac=None, octets=0):
+        if progress:
+            try: progress(etape, frac, octets)
+            except Exception: pass
+    moi = Path(sys.executable)
+    dossier = moi.parent
+    noms = [n for n in EXE if (dossier / n).exists() or n == moi.name]
+    if moi.name not in EXE:
+        raise RuntimeError(f"Ce programme a été renommé ({moi.name}) : téléchargez les nouveaux .exe sur {SITE}")
+    sommes = {}
+    for ligne in _lire(f"{RELEASE}/SHA256SUMS.txt").decode("ascii", "replace").splitlines():
+        morceaux = ligne.split()
+        if len(morceaux) == 2:
+            sommes[morceaux[1].lstrip("*")] = morceaux[0].lower()
+    signale("download", 0, 0)
+    recu, nouveaux = 0, []
+    try:
+        for n in noms:
+            neuf = dossier / (n + ".new")
+            h = hashlib.sha256()
+            try:
+                f = open(neuf, "wb")
+            except PermissionError:
+                raise RuntimeError(f"Le dossier {dossier} est protégé en écriture. Copiez les .exe dans un dossier "
+                                   f"à vous (Documents, Bureau) ou téléchargez-les sur {SITE}")
+            with f, urllib.request.urlopen(urllib.request.Request(f"{RELEASE}/{n}", headers=_UA), timeout=120) as r:
+                while True:
+                    bloc = r.read(262144)
+                    if not bloc:
+                        break
+                    f.write(bloc); h.update(bloc); recu += len(bloc)
+                    signale("download", None, recu)
+            nouveaux.append(neuf)
+            if sommes.get(n) != h.hexdigest():
+                raise RuntimeError(f"{n} : fichier téléchargé abîmé (somme de contrôle), rien n'a été changé")
+        signale("install", 0.5)
+        for n in noms:
+            exe, neuf, vieux = dossier / n, dossier / (n + ".new"), dossier / (n + ".old")
+            try: vieux.unlink()
+            except FileNotFoundError: pass
+            if exe.exists():
+                os.replace(exe, vieux)                  # permis même si ce .exe est ouvert
+            try:
+                os.replace(neuf, exe)
+            except OSError:
+                if vieux.exists() and not exe.exists():
+                    os.replace(vieux, exe)              # on remet l'ancien
+                raise
+        signale("install", 1.0)
+    finally:
+        for neuf in nouveaux:
+            try: neuf.unlink()
+            except OSError: pass
+
+
+def relancer():
+    """Démarre le nouveau .exe et quitte celui-ci (son port série est libéré en sortant)."""
+    subprocess.Popen([sys.executable] + sys.argv[1:], cwd=str(Path(sys.executable).parent))
+    os._exit(0)
+
+
 def adapter_mises_a_jour():
-    """Le bouton dit si une version plus récente existe, mais n'essaie pas de remplacer le .exe."""
+    """Le bouton de mise à jour compare ce .exe à la release « windows » et la recopie d'un clic."""
     import mise_a_jour
 
     def check(_app_dir=None):
-        distante = mise_a_jour.remote_version()
-        return bool(distante) and not distante.startswith(VERSION), distante, VERSION
-
-    def installer(_parent, _app_dir, _sha=None, _lang="fr", _on_ok=None, on_erreur=None):
-        if on_erreur:
-            on_erreur(MESSAGE_MAJ)
+        distante = version_publiee()
+        return bool(distante) and distante != VERSION[:7], distante, VERSION
 
     mise_a_jour.check = check
+    mise_a_jour.apply = appliquer
+    mise_a_jour.restart = relancer
     mise_a_jour.local_version = lambda *_a, **_k: VERSION
     mise_a_jour.register = lambda *_a, **_k: None
-    mise_a_jour.installer_avec_attente = installer
 
 
 def outil_camera_absent():
@@ -109,4 +198,5 @@ def choisir():
 if __name__ == "__main__":
     adapter_subprocess()
     adapter_mises_a_jour()
+    nettoyer_anciens()
     choisir()()
