@@ -14,17 +14,25 @@ Pas disponible sous Windows : caméras ZWO, focuseur EAF et dérotateur ZWO, ast
 modèle automatique, autoguidage spectro, mise en station par caméra, réglage de l'horloge du PC.
 Pour flasher une carte, arduino-cli doit être installé et trouvable par Windows.
 
-Les .exe ne se mettent pas à jour tout seuls : le bouton de mise à jour prévient quand une version
-plus récente existe. Téléchargement : https://goto-andrivet.duckdns.org/telecharger.html
+Mise à jour : le bouton « Mise à jour » de la carte du ciel ou du configurateur passe au rouge quand
+une nouvelle version existe. Un clic télécharge les nouveaux .exe (tous ceux du même dossier), les met
+à la place des anciens et relance le programme. Rangez les .exe dans un dossier à vous (Documents,
+Bureau) : un dossier protégé comme « Program Files » empêche la mise à jour.
+Téléchargement : https://goto-andrivet.duckdns.org/telecharger.html
 ou https://github.com/jbandrivet/gotoandrivet/releases/tag/windows
 
 
 Fabriquer les .exe (dossier windows/ du dépôt)
 ----------------------------------------------
-Sur Linux, avec une machine VirtualBox Windows nommée « vm windows », allumée :
+Automatique : à chaque commit qui touche le programme, le workflow .github/workflows/windows.yml
+fabrique les .exe sur une machine Windows de GitHub et les publie dans la release « windows »
+(version.txt en dernier : c'est lui que lit le bouton de mise à jour).
+
+À la main, sur Linux, avec une machine VirtualBox Windows nommée « vm windows », allumée :
   1. windows/preparer_vm.sh      (copie du dernier commit + Python Windows dans un dossier partagé T:)
   2. dans Windows : Win+R, puis  cmd /c T:\fabrication\fabriquer.bat
      Les .exe arrivent dans ~/.cache/gotoandrivet-windows/partage/sortie.
-  3. publier : gh release upload windows ~/.cache/gotoandrivet-windows/partage/sortie/*.exe --clobber
+  3. pour tester seulement : la release reste celle du workflow (sinon SHA256SUMS.txt et version.txt
+     ne correspondraient plus aux .exe).
 Le dossier C:\GotoBuild de la machine sert à cette fabrication.
 On ne fabrique pas sous Wine : numpy 2 y plante (ucrtbase).

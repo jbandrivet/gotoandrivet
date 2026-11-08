@@ -493,7 +493,9 @@ sur son port COM.</p>
 <p class="petit">Si Windows affiche « Windows a protégé votre ordinateur », cliquez sur <strong>Informations
 complémentaires</strong> puis <strong>Exécuter quand même</strong> : les .exe ne sont pas signés.
 Pas disponibles sous Windows : caméras ZWO, focuseur EAF, astrométrie et outils caméra.
-Les .exe ne se mettent pas à jour tout seuls : le bouton de mise à jour prévient quand il faut revenir ici.</p>
+Mise à jour : le bouton « Mise à jour » passe au rouge quand une nouvelle version existe ; un clic remplace
+les .exe du dossier et relance le programme. Rangez-les dans un dossier à vous (Documents, Bureau), pas dans
+« Program Files ».</p>
 </section>
 <section class="panneau">
 <h2>Firmwares des cartes</h2>

@@ -39,7 +39,8 @@ Prérequis pour l'installateur et la commande (le paquet .deb les installe tout 
 
 ## Windows
 
-Trois `.exe` autonomes (carte du ciel, configurateur, raquette virtuelle), sans installation :
+Trois `.exe` autonomes (carte du ciel, configurateur, raquette virtuelle), sans installation, fabriqués
+par GitHub à chaque commit et mis à jour par le bouton « Mise à jour » :
 [release `windows`](https://github.com/jbandrivet/gotoandrivet/releases/tag/windows) ou
 [page Télécharger du site](https://goto-andrivet.duckdns.org/telecharger.html). Caméras ZWO, EAF et
 astrométrie n'y sont pas disponibles. Fabrication : dossier [`windows/`](windows/LISEZMOI.txt).
