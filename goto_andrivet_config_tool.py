@@ -18,6 +18,19 @@ import mise_a_jour
 
 CONFIG_FILE = Path.home() / ".config" / "goto_andrivet" / "config_tool_settings.json"
 
+# Identifiants USB (VID) : cartes de monture, puis adaptateurs série USB des clones.
+USB_CARTES = {0x16C0: "Teensy", 0x2341: "Arduino", 0x2A03: "Arduino"}
+USB_ADAPTATEURS = {0x1A86: "CH340", 0x0403: "FTDI", 0x10C4: "CP210x", 0x067B: "PL2303"}
+
+def ports_series():
+    """Tous les ports série, cartes Teensy/Arduino d'abord, puis adaptateurs USB
+    des clones, puis autres ports USB, puis ports internes du PC (COM1, ttyS…)."""
+    def rang(p):
+        if p.vid in USB_CARTES: return 0
+        if p.vid in USB_ADAPTATEURS: return 1
+        return 2 if p.vid is not None else 3
+    return [p.device for p in sorted(serial.tools.list_ports.comports(), key=lambda p: (rang(p), p.device))]
+
 DEFAULTS = {
     "mount_port": "/dev/ttyACM0",
     "mount_baud": 38400,
@@ -442,7 +455,9 @@ class ConfigToolApp(tk.Tk):
         self.port_var = tk.StringVar(value=self.settings["mount_port"])
         self.port_menu = tk.OptionMenu(conn_grid, self.port_var, *self.scan_ports())
         self.port_menu.config(bg="#c0c0c0", fg="black", font=f_label, relief="raised", bd=2, activebackground="#d9d9d9", highlightthickness=0)
-        self.port_menu["menu"].config(bg="#c0c0c0", fg="black", font=f_label)
+        # Liste relue à chaque ouverture : une carte branchée après le lancement y apparaît
+        self.port_menu["menu"].config(bg="#c0c0c0", fg="black", font=f_label, postcommand=self.refresh_ports)
+        self.choose_present_port()
         self.port_menu.grid(row=0, column=1, padx=5, sticky="w")
 
         self.lbl_baud = tk.Label(conn_grid, text="Baud:", bg="#c0c0c0", fg="black", font=f_label)
@@ -1169,8 +1184,23 @@ class ConfigToolApp(tk.Tk):
         self.gps_btn.config(state="normal")
 
     def scan_ports(self):
-        ports = [p.device for p in serial.tools.list_ports.comports()]
-        return ports if ports else ["/dev/ttyACM0", "/dev/ttyUSB0"]
+        ports = ports_series()
+        if ports: return ports
+        return ["COM3"] if os.name == "nt" else ["/dev/ttyACM0", "/dev/ttyUSB0"]
+
+    def choose_present_port(self):
+        """Si le port enregistré n'existe plus (carte débranchée, autre COM sous Windows),
+        prendre la carte Teensy/Arduino présente plutôt que d'échouer sur l'ancien port."""
+        ports = ports_series()
+        if ports and self.port_var.get() not in ports:
+            self.port_var.set(ports[0])
+
+    def refresh_ports(self):
+        menu = self.port_menu["menu"]
+        menu.delete(0, "end")
+        for p in self.scan_ports():
+            menu.add_command(label=p, command=tk._setit(self.port_var, p))
+        self.choose_present_port()
 
     def update_speed_lbl(self, val=None):
         if hasattr(self, 'board_var') and hasattr(self, 'chk_focus_mega'):
@@ -1512,6 +1542,7 @@ print(json.dumps(res))
 
     def toggle_connection(self):
         if not self.is_connected:
+            self.choose_present_port()
             port = self.port_var.get()
             try:
                 baud = int(self.baud_var.get())
@@ -1519,7 +1550,7 @@ print(json.dumps(res))
                 baud = 9600
                 
             try:
-                self.ser = serial.Serial(port, baud, timeout=1.5)
+                self.ser = serial.Serial(port, baud, timeout=1.5, exclusive=True)
                 # Wait for Arduino bootloader reset
                 time.sleep(2.0)
                 self.ser.reset_input_buffer()

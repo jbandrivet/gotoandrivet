@@ -388,8 +388,9 @@ class Mount:
         if not HAS_SERIAL:
             log.error("pyserial non installé — pip3 install pyserial"); return False
         try:
+            # Exclusif : la recherche de port des autres logiciels (raquette virtuelle) saute ce port
             self._ser = serial.Serial(port, baud,
-                timeout=self.cfg.get("mount_timeout",0.5), write_timeout=1.0)
+                timeout=self.cfg.get("mount_timeout",0.5), write_timeout=1.0, exclusive=True)
             time.sleep(2)
             self.state.connected = True
             
@@ -463,8 +464,13 @@ class Mount:
         try:
             with serial.Serial(port, baud, timeout=0.5, write_timeout=1.0, exclusive=True) as s:
                 time.sleep(wait)                  # le Mega redémarre à l'ouverture du port
-                s.reset_input_buffer(); s.write(b":GVP#")
-                return b"OnStep" in s.read_until(b"#", 32)
+                s.reset_input_buffer()
+                # Deux essais : un reste de commande coupée (programme fermé en pleine
+                # discussion) peut avaler la première question (vu sous Windows avec un Teensy).
+                for _ in range(2):
+                    s.write(b":GVP#")
+                    if b"OnStep" in s.read_until(b"#", 32): return True
+                return False
         except Exception:
             return False
 

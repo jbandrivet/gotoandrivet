@@ -6,6 +6,7 @@ import tactile_wayland
 import serial
 import serial.tools.list_ports
 import time
+import threading
 import math
 import sys
 import os
@@ -13,7 +14,7 @@ from datetime import datetime, timezone
 
 # Ajouter le répertoire courant au chemin d'importation
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from goto_andrivet import ALL_CATALOGS, Astro, Settings
+from goto_andrivet import ALL_CATALOGS, Astro, Settings, Mount
 import ephem
 
 class VirtualTeensyApp(tk.Tk):
@@ -366,73 +367,113 @@ class VirtualTeensyApp(tk.Tk):
             elif event.num == 5 or event.delta < 0:
                 self.handle_btn("DOWN")
 
+    def _chercher_monture(self, ports):
+        """Fil de fond : premier port USB où une monture OnStep répond à :GVP#.
+        Mega, clone ou Teensy : c'est la réponse qui compte, pas le type de carte.
+        Ouverture exclusive : un port déjà pris (carte du ciel, INDI) est sauté."""
+        for d, n in ports:
+            if Mount.probe(d, 38400, 0.3 if n == "Teensy" else 2.0):
+                self.conn_trouve = (d, n)
+                return
+        self.conn_trouve = (None, None)
+
+    def _passer_en_simulation(self):
+        if not self.is_connected:
+            self.is_connected = True
+            self.sim_mode = True
+            self.port = "SIMULATEUR"
+            self.conn_lbl.config(text="Connecte: SIMULATEUR", fg="#00e5ff")
+            self.update_lcd()
+
     def check_connection_loop(self):
         if not hasattr(self, 'conn_state'):
             self.conn_state = "disconnected"
             self.conn_start_time = 0
             self.conn_port = ""
+            self.conn_vus = None      # ports USB vus au dernier essai
+            self.conn_trouve = None
+            self.conn_essai = 0       # heure du dernier essai
 
-        if not self.is_connected:
-            if self.conn_state == "disconnected":
-                ports = serial.tools.list_ports.comports()
-                
-                # Chercher spécifiquement l'Arduino Mega (VID 2341) et éviter la Teensy (VID 16C0)
-                mega_ports = [p.device for p in ports if "2341:" in (p.hwid or "")]
-                if not mega_ports:
-                    # Fallback si clone Arduino avec un autre VID, mais on exclut explicitement la Teensy
-                    mega_ports = [p.device for p in ports if ("USB" in p.device or "ACM" in p.device) and "16C0:" not in (p.hwid or "")]
-                    
-                if mega_ports:
-                    port = mega_ports[0]
-                    try:
-                        self.ser = serial.Serial(port, 38400, timeout=0.5)
-                        self.conn_state = "connecting"
-                        self.conn_start_time = time.time()
-                        self.conn_port = port
-                        self.conn_lbl.config(text=f"Connexion: {port}...", fg="#ffcc00")
-                    except Exception:
-                        if hasattr(self, 'ser') and self.ser:
-                            try: self.ser.close()
-                            except: pass
-                        self.ser = None
+        # Liaison perdue (câble débranché…) : on repart à la recherche
+        if self.conn_state == "connected" and not self.is_connected:
+            if self.ser:
+                try: self.ser.close()
+                except: pass
+            self.ser = None
+            self.conn_state = "disconnected"
+            self.conn_vus = None
+
+        if self.conn_state == "disconnected" and (not self.is_connected or self.sim_mode):
+            # Nouvel essai au démarrage, chaque fois qu'un port USB apparaît ou disparaît,
+            # et toutes les 10 s en simulation (port libéré par la carte du ciel…) :
+            # brancher ou libérer la monture suffit pour passer en réel.
+            ports = Mount.usb_ports()
+            vus = sorted(d for d, _ in ports)
+            if vus != self.conn_vus or (ports and self.sim_mode and time.time() - self.conn_essai > 10):
+                self.conn_vus = vus
+                self.conn_essai = time.time()
+                if ports:
+                    self.conn_state = "searching"
+                    self.conn_trouve = None
+                    if not self.is_connected:
+                        self.conn_lbl.config(text="Recherche de la monture...", fg="#ffcc00")
+                    threading.Thread(target=self._chercher_monture, args=(ports,), daemon=True).start()
                 else:
                     # Mode simulation automatique si aucun matériel physique n'est détecté
-                    self.is_connected = True
-                    self.sim_mode = True
-                    self.port = "SIMULATEUR"
-                    self.conn_lbl.config(text="Connecte: SIMULATEUR", fg="#00e5ff")
-                    self.update_lcd()
-            
-            elif self.conn_state == "connecting":
-                # Attendre 2.2 secondes pour que l'Arduino ait terminé sa phase de reboot
-                if time.time() - self.conn_start_time > 2.2:
-                    try:
-                        self.ser.reset_input_buffer()
-                        self.ser.write(b":GVP#")
-                        resp = self.ser.read_until(b"#").decode('ascii', errors='ignore')
-                        if "OnStep" in resp or "On-Step" in resp or "GotoMega" in resp or resp.strip():
-                            self.is_connected = True
-                            self.sim_mode = False
-                            self.port = self.conn_port
-                            self.conn_lbl.config(text=f"Connecte: {self.conn_port}", fg="#39ff14")
-                            self.conn_state = "connected"
-                            self.sync_clock()
-                            self.update_lcd()
-                        else:
-                            self.ser.close()
-                            self.ser = None
-                            self.conn_state = "disconnected"
-                    except Exception:
-                        if self.ser:
-                            try: self.ser.close()
-                            except: pass
+                    self._passer_en_simulation()
+
+        elif self.conn_state == "searching" and self.conn_trouve is not None:
+            port, nom = self.conn_trouve
+            self.conn_trouve = None
+            if port:
+                try:
+                    self.ser = serial.Serial(port, 38400, timeout=0.5, exclusive=True)
+                    self.conn_state = "connecting"
+                    # Le Mega redémarre à l'ouverture du port (2,2 s), pas le Teensy
+                    self.conn_start_time = time.time() - (1.9 if nom == "Teensy" else 0)
+                    self.conn_port = port
+                    if not self.is_connected:
+                        self.conn_lbl.config(text=f"Connexion: {port}...", fg="#ffcc00")
+                except Exception:
+                    self.ser = None
+                    self.conn_state = "disconnected"
+                    self._passer_en_simulation()
+            else:
+                self.conn_state = "disconnected"
+                self._passer_en_simulation()
+
+        elif self.conn_state == "connecting":
+            # Attendre 2.2 secondes pour que l'Arduino ait terminé sa phase de reboot
+            if time.time() - self.conn_start_time > 2.2:
+                try:
+                    self.ser.reset_input_buffer()
+                    self.ser.write(b":GVP#")
+                    resp = self.ser.read_until(b"#").decode('ascii', errors='ignore')
+                    if "OnStep" in resp or "On-Step" in resp or "GotoMega" in resp or resp.strip():
+                        self.is_connected = True
+                        self.sim_mode = False
+                        self.port = self.conn_port
+                        self.conn_lbl.config(text=f"Connecte: {self.conn_port}", fg="#39ff14")
+                        self.conn_state = "connected"
+                        self.sync_clock()
+                        self.update_lcd()
+                    else:
+                        self.ser.close()
                         self.ser = None
                         self.conn_state = "disconnected"
+                        self._passer_en_simulation()
+                except Exception:
+                    if self.ser:
+                        try: self.ser.close()
+                        except: pass
+                    self.ser = None
+                    self.conn_state = "disconnected"
+                    self._passer_en_simulation()
 
-        # Relancer la boucle toutes les 250ms pendant la phase de connexion pour rester réactif
-        if not self.is_connected or self.conn_state == "connecting":
+        # Boucle rapide pendant la recherche, lente une fois connecté ou en simulation
+        if not self.is_connected or self.conn_state in ("searching", "connecting"):
             self.after(250, self.check_connection_loop)
-        elif not self.sim_mode:
+        else:
             self.after(2000, self.check_connection_loop)
 
     def sync_clock(self):
