@@ -2,6 +2,10 @@
 
 **Site du projet : [goto-andrivet.duckdns.org](https://goto-andrivet.duckdns.org)**
 
+**Fonctionne sous Linux et sous Windows** : [installation Linux](#installation-en-un-clic-linux) ·
+[installation Windows](#installation-windows). La monture et ses firmwares sont les mêmes : une carte
+flashée une fois sert avec les deux.
+
 Ce projet supporte de manière universelle trois types de montures astronomiques :
 1. **Alt-Azimutale (AltAz)** : Pour montures Dobson et Alt-Azimutales standards.
 2. **Fourche Équatoriale (ForkEq)** : Pour montures équatoriales à fourche ou tables équatoriales (aucun retournement de méridien requis, suivi sidéral direct sur l'angle horaire).
@@ -37,13 +41,24 @@ Prérequis pour l'installateur et la commande (le paquet .deb les installe tout 
 
 ---
 
-## Windows
+## Installation (Windows)
 
-Trois `.exe` autonomes (carte du ciel, configurateur, raquette virtuelle), sans installation, fabriqués
-par GitHub à chaque commit et mis à jour par le bouton « Mise à jour » :
-[release `windows`](https://github.com/jbandrivet/gotoandrivet/releases/tag/windows) ou
-[page Télécharger du site](https://goto-andrivet.duckdns.org/telecharger.html). Caméras ZWO, EAF et
-astrométrie n'y sont pas disponibles. Fabrication : dossier [`windows/`](windows/LISEZMOI.txt).
+Trois `.exe` autonomes, sans installation : copiez-les dans un dossier à vous (Documents, Bureau) et
+double-cliquez.
+
+* **[⬇ GotoAndrivet_Carte_du_ciel.exe](https://github.com/jbandrivet/gotoandrivet/releases/download/windows/GotoAndrivet_Carte_du_ciel.exe)** : la carte du ciel et le GoTo
+* **[⬇ GotoAndrivet_Configurateur.exe](https://github.com/jbandrivet/gotoandrivet/releases/download/windows/GotoAndrivet_Configurateur.exe)** : le réglage de la monture
+* **[⬇ GotoAndrivet_Raquette.exe](https://github.com/jbandrivet/gotoandrivet/releases/download/windows/GotoAndrivet_Raquette.exe)** : la raquette virtuelle
+
+La monture (Arduino Mega, clone ou Teensy) est trouvée toute seule sur son port COM. Si Windows affiche
+« Windows a protégé votre ordinateur » : **Informations complémentaires** → **Exécuter quand même** (les
+`.exe` ne sont pas signés).
+
+Les `.exe` sont fabriqués par GitHub à chaque modification du programme
+([release `windows`](https://github.com/jbandrivet/gotoandrivet/releases/tag/windows)) ; le bouton
+« Mise à jour » passe au rouge quand une nouvelle version existe et les remplace d'un clic. Pas
+disponibles sous Windows : caméras ZWO, focuseur EAF, astrométrie et guidage. Fabrication : dossier
+[`windows/`](windows/LISEZMOI.txt).
 
 ## Structure du Projet
 
