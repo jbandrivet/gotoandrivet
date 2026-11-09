@@ -81,9 +81,25 @@ $$PPD = \frac{\text{Pas Moteur} \times \text{Microstepping} \times \text{Rapport
 
 ## 5. Modes de Suivi (Tracking)
 
-*   **Suivi Sidéral (Ciel profond) :** Calculé en temps réel toutes les 500 ms à partir du Temps Sidéral Local (LST) de l'horloge.
-*   **Suivi Lunaire (`:TL#`) :** Vitesse de l'angle horaire (HA) ralentie de **~3,65 %** (facteur d'échelle `0.963499`, soit 14,492″/s) pour compenser le déplacement de la Lune sur son orbite (13,18° par jour vers l'est).
-*   **Suivi Solaire (`:TS#`) :** Vitesse ralentie de **~0,27%** (facteur d'échelle `0.997270`) pour compenser le mouvement orbital de la Terre.
+*   **Suivi Sidéral (Ciel profond) :** Calculé en temps réel à partir du Temps Sidéral Local (LST) de l'horloge : position complète toutes les 5 s, correction toutes les 200 ms.
+*   **Suivi Lunaire (`:TL#`) :** La carte calcule elle-même le déplacement de la Lune (formules abrégées de Meeus, vue depuis le lieu d'observation, parallaxe comprise) et la suit en ascension droite **et en déclinaison**. La Lune change de déclinaison jusqu'à 6° par jour : une simple vitesse ralentie (l'ancien facteur `0.963499`) la laissait sortir du champ de 15 à 25′ par heure. Sur le banc d'essai, l'écart reste sous 0,3′ en 3 heures.
+*   **Suivi Solaire (`:TS#`) :** Même principe pour le Soleil (sa déclinaison varie jusqu'à 0,4° par jour).
+*   **Réfraction :** L'air remonte les astres (29′ à l'horizon, 5,4′ à 10° de hauteur, 1′ à 45°). Elle est corrigée au GoTo comme au suivi, sur les deux axes, avec 1010 hPa et 10 °C. Active par défaut ; `:Tn#` la coupe, `:To#` ou `:Tr#` la remettent (dans Ekos : réglage *Compensation*). Le statut `:GU#` porte alors la lettre `t`, qu'Ekos affiche « Full Comp ». Elle s'efface tout près du pôle céleste (au-delà de 89,8° de déclinaison), où elle ferait tourner l'axe horaire pour rien.
+*   **GoTo anticipé :** Le ciel tourne de 15″ par seconde. La carte vise donc l'endroit où sera l'objet à l'arrivée du GoTo : la durée du trajet est calculée d'après la rampe des moteurs, puis corrigée par ce qu'ont duré les GoTo précédents. À l'arrivée, l'écart est de l'ordre de 0,1′ (contre 3 à 10′ avant).
+
+### Modèle de pointage (Teensy uniquement)
+
+Chaque synchro (`:CM#`, par exemple après une photo résolue par astrométrie) enregistre un point, jusqu'à 50. La carte en déduit les défauts de la monture, par moindres carrés :
+
+| Terme | Défaut |
+| :--- | :--- |
+| IH, ID | Décalage des deux codeurs (zéro des axes) |
+| P, Q | Inclinaison de l'axe principal : mise en station (équatoriale) ou calage du trépied (alt-az) |
+| CH | Tube pas d'équerre avec l'axe de déclinaison (ou d'altitude) |
+| NP | Les deux axes ne sont pas perpendiculaires |
+| TF | Flexion du tube (alt-az seulement) |
+
+Avec 1 étoile, seul le décalage est corrigé ; avec 2, la mise en station s'ajoute ; à partir de 3, tous les termes. Ce qui reste à chaque étoile est ensuite interpolé, pour tomber juste sur les étoiles de synchro ; loin d'elles, seuls les défauts calculés servent. Sur monture simulée (décalages de 2°, mise en station fausse de 1°), 5 étoiles donnent 0,3 à 1,8′ d'erreur médiane sur tout le ciel, contre 11 à 56′ avec l'ancienne interpolation seule. `:CML#` efface le modèle. La Mega garde la synchro à une étoile (elle recale les axes).
 
 ---
 

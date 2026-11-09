@@ -88,6 +88,8 @@ struct SyncPoint {
   double ideal_alt;
   double mach_az;
   double mach_alt;
+  double res_az;    // ecart restant apres les termes geometriques (pmFit)
+  double res_alt;
 };
 static SyncPoint syncPoints[MAX_SYNC_POINTS];
 static int numSyncPoints = 0;
@@ -365,8 +367,7 @@ static void loadStateFromEEPROM() {
   altPos = (long)(currAlt * ALT_PPD);
   mach2rd(currAlt, currAz, &currRA, &currDEC);
 
-  trkRA = (double)currRA / 3600.0;
-  trkDec = (double)currDEC / 3600.0;
+  setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
 
   double d = 1.0e6 / (AZ_PPD * maxSlewRate);
   if(d < (double)STEP_DELAY_FAST) d = STEP_DELAY_FAST;
@@ -656,53 +657,269 @@ static double lst() {
   return lst_offset(0.0);
 }
 
-// Facteurs d'avance de l'angle horaire, rapportes au sideral (1,0) :
-// Lune : elle avance de 360/27,3217 = 13,176 deg/jour vers l'est, son angle horaire
-// tourne donc a (360,9856 - 13,176) / 360,9856 = 0,963499, soit 14,492"/s.
-// L'ancienne valeur 0,976327 (14,685"/s, reprise de la doc ASCOM) laissait deriver
-// la Lune d'environ 12' d'arc par heure. Soleil : 360 / 360,9856 = 0,997270.
-static double getHourAngle(double ra) {
-  double current_lst = lst();
-  double ha_hours;
-  if (tracking && trkStartLST > 0.0) {
-    double scale = 1.0;
-    if (trackRate == 1)      scale = 0.963499; 
-    else if (trackRate == 2) scale = 0.997270; 
-    double elapsed = current_lst - trkStartLST;
-    if (elapsed < -12.0) elapsed += 24.0;
-    if (elapsed > 12.0)  elapsed -= 24.0;
-    ha_hours = (trkStartLST - ra) + elapsed * scale;
-  } else {
-    ha_hours = current_lst - ra;
-  }
-  double ha = fmod(ha_hours * 15.0, 360.0);
-  if (ha < 0.0) ha += 360.0;
-  return ha;
+// ======================== LUNE ET SOLEIL ========================
+// Suivi lunaire (:TL#) et solaire (:TS#) : plutot qu'une vitesse fixe, on suit
+// le DEPLACEMENT calcule de l'astre depuis l'instant ou la cible a ete fixee
+// (GoTo, sync, reprise du suivi) : cible(t) = cible(t0) + astre(t) - astre(t0).
+// Les coordonnees du logiciel restent la reference ; seule leur derive est
+// calculee ici, ce qui tolere l'ecart absolu (2' au plus) de ces formules
+// abregees (Meeus, ch. 25 et 47) : en 3 h, le deplacement calcule differe de
+// moins de 7" de celui d'une ephemeride complete. La Lune est vue du lieu
+// (parallaxe jusqu'a 1 deg) et suivie aussi en declinaison, qui varie
+// jusqu'a 6 deg par jour : une vitesse fixe ne suivait que l'angle horaire.
+
+// (a0 + vitesse x jours) modulo 360. Le produit par les jours entiers est fait
+// en entier 64 bits (nano-degres) : en flottant 32 bits (Mega), 13,18 x 9 800
+// jours = 129 000 deg n'auraient plus que 0,01 deg de resolution.
+static double ephArg(double a0, int64_t rateNano, long whole, double frac) {
+  int64_t w = (rateNano * (int64_t)whole) % 360000000000LL;
+  double a = a0 + (double)w * 1.0e-9 + (double)rateNano * 1.0e-9 * frac;
+  a = fmod(a, 360.0);
+  if (a < 0.0) a += 360.0;
+  return a;
 }
 
+// Termes principaux de Meeus, tables 47.A et 47.B : multiples de D, M, M', F,
+// longitude en 1e-6 deg, distance en m, latitude en 1e-6 deg.
+struct MoonTermLR { int8_t d, m, mp, f; int32_t l, r; };
+struct MoonTermB  { int8_t d, m, mp, f; int32_t b; };
+static const MoonTermLR MOON_LR[] PROGMEM = {
+  {0,0,1,0, 6288774,-20905355}, {2,0,-1,0,1274027,-3699111}, {2,0,0,0, 658314,-2955968},
+  {0,0,2,0,  213618,  -569925}, {0,1,0,0, -185116,   48888}, {0,0,0,2,-114332,  -3149},
+  {2,0,-2,0,  58793,   246158}, {2,-1,-1,0, 57066, -152138}, {2,0,1,0,  53322, -170733},
+  {2,-1,0,0,  45758,  -204586}, {0,1,-1,0, -40923, -129620}, {1,0,0,0, -34720,  108743},
+  {0,1,1,0,  -30383,   104755}, {2,0,0,-2,  15327,   10321}, {0,0,1,2, -12528,       0},
+  {0,0,1,-2,  10980,    79661}, {4,0,-1,0,  10675,  -34782}, {0,0,3,0,  10034,  -23210},
+  {4,0,-2,0,   8548,   -21636}, {2,1,-1,0,  -7888,   24208}, {2,1,0,0,  -6766,   30824},
+  {1,0,-1,0,  -5163,    -8379}, {1,1,0,0,    4987,  -16675}, {2,-1,1,0,  4036,  -12831},
+};
+static const MoonTermB MOON_B[] PROGMEM = {
+  {0,0,0,1,5128122}, {0,0,1,1,280602}, {0,0,1,-1,277693}, {2,0,0,-1,173237},
+  {2,0,-1,1,  55413}, {2,0,-1,-1,46271}, {2,0,0,1,  32573}, {0,0,2,1,  17198},
+  {2,0,1,-1,   9266}, {0,0,2,-1,  8822}, {2,-1,0,-1, 8216}, {2,0,-2,-1,  4324},
+};
+
+static void ecl2eq(double lam, double bet, double T, double *ra_h, double *dec_d) {
+  double e = (23.4392911 - 0.0130042 * T) * DEG_TO_RAD;
+  double l = lam * DEG_TO_RAD, b = bet * DEG_TO_RAD;
+  double ra = atan2(sin(l) * cos(e) - tan(b) * sin(e), cos(l)) * RAD_TO_DEG;
+  if (ra < 0.0) ra += 360.0;
+  *ra_h = ra / 15.0;
+  *dec_d = asin(sin(b) * cos(e) + cos(b) * sin(e) * sin(l)) * RAD_TO_DEG;
+}
+
+// Lune vue du lieu (topocentrique), equinoxe de la date, a maintenant + offset_sec.
+static void moonTopo(double offset_sec, double *ra_h, double *dec_d) {
+  long whole; double frac;
+  jday_split(&whole, &frac);
+  frac += offset_sec / 86400.0;
+  double T = ((double)whole + frac) / 36525.0;
+  double Lp = ephArg(218.3164477, 13176396476LL, whole, frac);
+  double D  = ephArg(297.8501921, 12190749117LL, whole, frac);
+  double M  = ephArg(357.5291092,   985600281LL, whole, frac);
+  double Mp = ephArg(134.9633964, 13064992950LL, whole, frac);
+  double F  = ephArg( 93.2720950, 13229350249LL, whole, frac);
+  double E = 1.0 - 0.002516 * T;
+  double sl = 0.0, sr = 0.0, sb = 0.0;
+  for (unsigned i = 0; i < sizeof(MOON_LR) / sizeof(MOON_LR[0]); i++) {
+    MoonTermLR t; memcpy_P(&t, &MOON_LR[i], sizeof(t));
+    double a = (t.d * D + t.m * M + t.mp * Mp + t.f * F) * DEG_TO_RAD;
+    double k = (t.m == 0) ? 1.0 : E;
+    sl += (double)t.l * k * sin(a);
+    sr += (double)t.r * k * cos(a);
+  }
+  for (unsigned i = 0; i < sizeof(MOON_B) / sizeof(MOON_B[0]); i++) {
+    MoonTermB t; memcpy_P(&t, &MOON_B[i], sizeof(t));
+    double a = (t.d * D + t.m * M + t.mp * Mp + t.f * F) * DEG_TO_RAD;
+    sb += (double)t.b * ((t.m == 0) ? 1.0 : E) * sin(a);
+  }
+  double ra, dec;
+  ecl2eq(Lp + sl * 1.0e-6, sb * 1.0e-6, T, &ra, &dec);
+  double dist = 385000.56 + sr * 1.0e-3;                    // km
+
+  // Parallaxe (Meeus ch. 40), altitude du lieu negligee.
+  double lr = siteLat * DEG_TO_RAD;
+  double u = atan(0.99664719 * tan(lr));
+  double rs = 0.99664719 * sin(u), rc = cos(u);
+  double sp = 6378.14 / dist;
+  double H = (lst_offset(offset_sec) - ra) * 15.0 * DEG_TO_RAD;
+  double d = dec * DEG_TO_RAD;
+  double A = cos(d) - rc * sp * cos(H);
+  double dra = atan2(-rc * sp * sin(H), A);
+  *dec_d = atan2((sin(d) - rs * sp) * cos(dra), A) * RAD_TO_DEG;
+  ra += dra * RAD_TO_DEG / 15.0;
+  if (ra < 0.0) ra += 24.0;
+  if (ra >= 24.0) ra -= 24.0;
+  *ra_h = ra;
+}
+
+// Soleil, equinoxe de la date (Meeus ch. 25, precision 0,01 deg).
+static void sunApp(double offset_sec, double *ra_h, double *dec_d) {
+  long whole; double frac;
+  jday_split(&whole, &frac);
+  frac += offset_sec / 86400.0;
+  double T = ((double)whole + frac) / 36525.0;
+  double L0 = ephArg(280.46646, 985647360LL, whole, frac);
+  double M  = ephArg(357.52911, 985600281LL, whole, frac) * DEG_TO_RAD;
+  double C = (1.914602 - 0.004817 * T) * sin(M) + 0.019993 * sin(2.0 * M) + 0.000289 * sin(3.0 * M);
+  ecl2eq(L0 + C - 0.00569, 0.0, T, ra_h, dec_d);
+}
+
+// Astre du mode de suivi 'rate' (1 = Lune, 2 = Soleil). Faux en sideral.
+static bool bodyAt(uint8_t rate, double offset_sec, double *ra_h, double *dec_d) {
+  if (rate == 1) { moonTopo(offset_sec, ra_h, dec_d); return true; }
+  if (rate == 2) { sunApp(offset_sec, ra_h, dec_d);   return true; }
+  return false;
+}
+
+// Cible (ra0, dec0) fixee quand l'astre etait en (eRA, eDec), deplacee comme
+// lui jusqu'a maintenant + offset_sec. En sideral : la cible ne bouge pas.
+static void movingTarget(double ra0, double dec0, uint8_t rate, double eRA, double eDec,
+                         double offset_sec, double *ra_h, double *dec_d) {
+  *ra_h = ra0; *dec_d = dec0;
+  double bR, bD;
+  if (!bodyAt(rate, offset_sec, &bR, &bD)) return;
+  double dR = bR - eRA;
+  if (dR > 12.0) dR -= 24.0;
+  if (dR < -12.0) dR += 24.0;
+  double ra = ra0 + dR;
+  if (ra < 0.0) ra += 24.0;
+  if (ra >= 24.0) ra -= 24.0;
+  double dec = dec0 + (bD - eDec);
+  if (dec > 90.0) dec = 90.0;
+  if (dec < -90.0) dec = -90.0;
+  *ra_h = ra; *dec_d = dec;
+}
+
+// Reference de la cible suivie : position de l'astre quand trkRA/trkDec ont ete
+// fixes, et le mode de suivi de ce moment-la.
+static double trkEphRA = 0.0, trkEphDec = 0.0;
+static uint8_t trkEphRate = 0;
+
+static void setTrkRef(double ra_h, double dec_d, uint8_t rate, double eRA, double eDec) {
+  trkRA = ra_h; trkDec = dec_d;
+  trkEphRate = rate; trkEphRA = eRA; trkEphDec = eDec;
+}
+
+// Toute nouvelle cible de suivi passe par ici (et non par trkRA = ...) : sinon,
+// en suivi lunaire, la reference de l'astre ne correspond plus a la cible.
+static void setTrk(double ra_h, double dec_d) {
+  double eR = 0.0, eD = 0.0;
+  bodyAt(trackRate, 0.0, &eR, &eD);
+  setTrkRef(ra_h, dec_d, trackRate, eR, eD);
+}
+
+// Cible suivie a maintenant + offset_sec.
+static void trackTargetAt(double offset_sec, double *ra_h, double *dec_d) {
+  movingTarget(trkRA, trkDec, trkEphRate, trkEphRA, trkEphDec, offset_sec, ra_h, dec_d);
+}
+
+// Changement de mode de suivi : la cible repart de la ou elle est maintenant.
+static void setTrackRate(uint8_t rate) {
+  if (rate == trackRate) return;
+  double r, d;
+  trackTargetAt(0.0, &r, &d);
+  trackRate = rate;
+  setTrk(r, d);
+}
+
+// ======================== REFRACTION ========================
+// L'atmosphere remonte les astres : 29' a l'horizon, 5,4' a 10 deg, 1' a 45 deg.
+// Formule de Saemundsson (hauteur vraie -> apparente), 1010 hPa et 10 deg C.
+// Appliquee au pointage comme au suivi (compensation complete). Active par
+// defaut ; :Tn# la coupe, :To# ou :Tr# la remettent ; drapeau 't' de :GU#.
+#define REFR_PRESSURE_HPA 1010.0
+#define REFR_TEMP_C       10.0
+static bool refractionOn = true;
+
+static double refrDeg(double hTrue) {
+  if (hTrue < -1.0) hTrue = -1.0;      // au-dela la formule diverge : on fige sous l'horizon
+  double r = 1.02 / tan((hTrue + 10.3 / (hTrue + 5.11)) * DEG_TO_RAD);   // minutes d'arc
+  r *= (REFR_PRESSURE_HPA / 1010.0) * (283.0 / (273.0 + REFR_TEMP_C));
+  if (r < 0.0) r = 0.0;
+  return r / 60.0;
+}
+
+// Hauteur vraie a partir de la hauteur apparente (la formule va dans l'autre sens).
+static double unrefract(double hApp) {
+  double h = hApp;
+  for (int k = 0; k < 5; k++) h = hApp - refrDeg(h);
+  return h;
+}
+
+// Refraction d'un point (angle horaire, declinaison) en degres : le point glisse
+// le long de son cercle vertical (vers le zenith si sens > 0). Calcul en
+// vecteurs, sans cas particulier au pole ; hauteurs et declinaisons par atan2,
+// precises aussi en flottant 32 bits (Mega).
+static void refrHaDec(double *ha, double *dec, int sens) {
+  double lr = siteLat * DEG_TO_RAD, d = *dec * DEG_TO_RAD, h = *ha * DEG_TO_RAD;
+  double vx = cos(d) * cos(h), vy = -cos(d) * sin(h), vz = sin(d);
+  double zx = cos(lr), zz = sin(lr);                 // zenith : AH 0, dec = latitude
+  double c = zx * vx + zz * vz;                      // sinus de la hauteur
+  double tx = zx - c * vx, ty = -c * vy, tz = zz - c * vz;
+  double n = sqrt(tx * tx + ty * ty + tz * tz);      // cosinus de la hauteur
+  if (n < 1.0e-9) return;                            // au zenith : rien a faire
+  double alt = atan2(c, n) * RAD_TO_DEG;
+  double dist = (sens > 0) ? refrDeg(alt) : unrefract(alt) - alt;
+  // Attenuee pres du pole celeste : a 0,1 deg du pole, 1' de refraction fait
+  // tourner l'axe horaire de plusieurs degres en quelques minutes, sans rien
+  // gagner en precision (l'ecart reste sous 1'). Nulle au-dela de 89,8 deg.
+  double fade = (89.8 - fabs(*dec)) / 0.8;
+  if (fade < 1.0) dist *= (fade > 0.0) ? fade : 0.0;
+  double cr = cos(dist * DEG_TO_RAD), sr = sin(dist * DEG_TO_RAD) / n;
+  double wx = vx * cr + tx * sr, wy = vy * cr + ty * sr, wz = vz * cr + tz * sr;
+  *ha = atan2(-wy, wx) * RAD_TO_DEG;
+  *dec = atan2(wz, sqrt(wx * wx + wy * wy)) * RAD_TO_DEG;
+}
+
+// Refraction dans les coordonnees de la monture (alt, az) : sens > 0 vrai ->
+// apparent, sens < 0 apparent -> vrai. AltAz : alt = hauteur ; fourche :
+// az = angle horaire, alt = dec ; allemande retournee : az = AH + 180, alt = 180 - dec.
+static void refrMount(double *alt, double *az, int sens) {
+  if (!refractionOn) return;
+  if (mountType == 0) {
+    *alt = (sens > 0) ? *alt + refrDeg(*alt) : unrefract(*alt);
+    return;
+  }
+  bool flipped = (mountType == 2) && !(*alt >= -90.0 && *alt <= 90.0);
+  double ha = flipped ? *az + 180.0 : *az;
+  double dec = flipped ? 180.0 - *alt : *alt;
+  refrHaDec(&ha, &dec, sens);
+  ha = fmod(ha, 360.0);
+  if (ha < 0.0) ha += 360.0;
+  if (flipped) {
+    *az = fmod(ha + 180.0, 360.0);
+    *alt = 180.0 - dec;
+  } else {
+    *az = ha;
+    *alt = dec;
+  }
+}
+
+// Coordonnees vraies (AD, dec de la date) -> coordonnees ideales de la monture,
+// refraction comprise. Le mouvement propre de la Lune ou du Soleil n'est pas
+// traite ici mais dans trackTargetAt() : offset_sec ne fait tourner que le ciel.
 static void ideal_rd2aa_at(double ra, double dec, double *alt, double *az, double offset_sec) {
-  double scale = 1.0;
-  if (trackRate == 1)      scale = 0.963499;
-  else if (trackRate == 2) scale = 0.997270;
-  
-  double l = lst_offset(offset_sec * scale);
+  double l = lst_offset(offset_sec);
   double ha_hours = l - ra;
   double ha = fmod(ha_hours * 15.0, 360.0);
   if (ha < 0.0) ha += 360.0;
-  
-  if (mountType == 1) { 
+
+  if (mountType == 1) {
     *alt = dec;
     *az = ha;
+    refrMount(alt, az, +1);
     return;
   }
-  if (mountType == 2) { 
-    if (ha >= 0.0 && ha < 180.0) { 
+  if (mountType == 2) {
+    if (ha >= 0.0 && ha < 180.0) {
       *az = ha;
       *alt = dec;
-    } else { 
+    } else {
       *az = fmod(ha + 180.0, 360.0);
       *alt = 180.0 - dec;
     }
+    refrMount(alt, az, +1);
     return;
   }
   double hr=ha*DEG_TO_RAD,dr=dec*DEG_TO_RAD,lr=siteLat*DEG_TO_RAD;
@@ -712,60 +929,146 @@ static void ideal_rd2aa_at(double ra, double dec, double *alt, double *az, doubl
   ca=constrain(ca,-1.0,1.0);
   *az=acos(ca)*RAD_TO_DEG;
   if(sin(hr)>0)*az=360.0-*az;
+  refrMount(alt, az, +1);
 }
 
+
+// ======================== MODELE DE POINTAGE ========================
+// Deux etages, dans les coordonnees de la monture : a = axe 1 (azimut ou angle
+// horaire), e = axe 2 (hauteur ou declinaison ; au-dela de 90 deg du cote
+// retourne d'une allemande, ou les termes changent de signe d'eux-memes).
+// 1. Les defauts de la monture, ajustes par moindres carres sur les points de
+//    synchro : IH/ID decalage des codeurs, P/Q inclinaison de l'axe principal
+//    (mise en station ou calage), CH cone (tube pas d'equerre), NP axes pas
+//    perpendiculaires, TF flexion du tube (alt-az seulement) :
+//      da = IH + CH sec e + NP tan e + tan e (Q sin a - P cos a)
+//      de = ID + P sin a + Q cos a + TF cos e
+//    1 point : IH, ID ; 2 points : + P, Q ; 3 points et plus : tous.
+// 2. Ce qui reste a chaque point est interpole (IDW) pour tomber juste sur les
+//    etoiles de synchro. Loin d'elles, un point fictif sans ecart a PM_R0 deg
+//    fait s'effacer l'interpolation au profit des seuls defauts calcules.
+// Sur monture simulee (decalages 2 deg, mise en station 1 deg, cone 0,3 deg),
+// 6 etoiles donnent 0,5' d'erreur mediane sur tout le ciel, contre 16' a
+// 20' pour l'interpolation seule qu'utilisait le firmware jusque-la.
+#define PM_NPAR 7
+#define PM_R0   20.0
+static double pmPar[PM_NPAR];   // IH ID P Q CH NP TF, en degres
+static uint8_t pmUsed = 0;      // nombre de termes ajustes
+
+static double pmWrap(double x) {
+  x = fmod(x, 360.0);
+  if (x > 180.0) x -= 360.0;
+  if (x <= -180.0) x += 360.0;
+  return x;
+}
+
+static void pmTerms(double a, double e, double r1[PM_NPAR], double r2[PM_NPAR]) {
+  double ce = cos(e * DEG_TO_RAD), se = sin(e * DEG_TO_RAD);
+  double cl = ce;                                   // borne : sec et tan a 87 deg
+  if (fabs(cl) < 0.0523) cl = (cl < 0.0) ? -0.0523 : 0.0523;
+  double sec = 1.0 / cl, tn = se / cl;
+  double sa = sin(a * DEG_TO_RAD), ca = cos(a * DEG_TO_RAD);
+  r1[0] = 1; r1[1] = 0; r1[2] = -ca * tn; r1[3] = sa * tn; r1[4] = sec; r1[5] = tn; r1[6] = 0;
+  r2[0] = 0; r2[1] = 1; r2[2] = sa;       r2[3] = ca;      r2[4] = 0;   r2[5] = 0;  r2[6] = (mountType == 0) ? ce : 0.0;
+}
+
+static void pmGeom(double a, double e, double *da, double *de) {
+  double r1[PM_NPAR], r2[PM_NPAR];
+  pmTerms(a, e, r1, r2);
+  *da = 0.0; *de = 0.0;
+  for (int k = 0; k < PM_NPAR; k++) { *da += r1[k] * pmPar[k]; *de += r2[k] * pmPar[k]; }
+}
+
+// Ajuste les termes sur les points de synchro, puis calcule les residus.
+static void pmFit() {
+  for (int k = 0; k < PM_NPAR; k++) pmPar[k] = 0.0;
+  pmUsed = 0;
+  int n = numSyncPoints;
+  if (n <= 0) return;
+  int np = (n == 1) ? 2 : (n == 2) ? 4 : (mountType == 0 && n >= 4) ? 7 : 6;
+  // Rappel vers zero (a priori : inclinaison ~2 deg, cone/NP ~1 deg, flexion
+  // ~0,5 deg, mesures a 0,1 deg) : evite les termes absurdes quand les points
+  // sont mal repartis. Sans effet notable des que les etoiles sont ecartees.
+  static const double prior[PM_NPAR] = {0.0, 0.0, 0.0025, 0.0025, 0.01, 0.01, 0.04};
+  double N[PM_NPAR][PM_NPAR + 1];
+  for (int r = 0; r < np; r++) for (int c = 0; c <= np; c++) N[r][c] = 0.0;
+  for (int i = 0; i < n; i++) {
+    double r1[PM_NPAR], r2[PM_NPAR];
+    pmTerms(syncPoints[i].ideal_az, syncPoints[i].ideal_alt, r1, r2);
+    double y1 = pmWrap(syncPoints[i].mach_az - syncPoints[i].ideal_az);
+    double y2 = pmWrap(syncPoints[i].mach_alt - syncPoints[i].ideal_alt);
+    for (int r = 0; r < np; r++) {
+      for (int c = 0; c < np; c++) N[r][c] += r1[r] * r1[c] + r2[r] * r2[c];
+      N[r][np] += r1[r] * y1 + r2[r] * y2;
+    }
+  }
+  for (int k = 0; k < np; k++) N[k][k] += prior[k];
+  // Gauss avec pivot partiel
+  bool ok = true;
+  for (int c = 0; c < np && ok; c++) {
+    int piv = c;
+    for (int r = c + 1; r < np; r++) if (fabs(N[r][c]) > fabs(N[piv][c])) piv = r;
+    if (fabs(N[piv][c]) < 1.0e-12) { ok = false; break; }
+    if (piv != c) for (int k = 0; k <= np; k++) { double tmp = N[c][k]; N[c][k] = N[piv][k]; N[piv][k] = tmp; }
+    for (int r = 0; r < np; r++) {
+      if (r == c) continue;
+      double f = N[r][c] / N[c][c];
+      for (int k = c; k <= np; k++) N[r][k] -= f * N[c][k];
+    }
+  }
+  if (ok) {
+    for (int k = 0; k < np; k++) {
+      pmPar[k] = N[k][np] / N[k][k];
+      if (!(fabs(pmPar[k]) < 15.0)) ok = false;     // aberrant (ou NaN) : on renonce
+    }
+  }
+  if (!ok) {
+    // Repli : simple decalage moyen, comme une synchro a une etoile.
+    for (int k = 0; k < PM_NPAR; k++) pmPar[k] = 0.0;
+    for (int i = 0; i < n; i++) {
+      pmPar[0] += pmWrap(syncPoints[i].mach_az - syncPoints[i].ideal_az) / n;
+      pmPar[1] += pmWrap(syncPoints[i].mach_alt - syncPoints[i].ideal_alt) / n;
+    }
+    np = 2;
+  }
+  pmUsed = (uint8_t)np;
+  for (int i = 0; i < n; i++) {
+    double da, de;
+    pmGeom(syncPoints[i].ideal_az, syncPoints[i].ideal_alt, &da, &de);
+    syncPoints[i].res_az = pmWrap(syncPoints[i].mach_az - syncPoints[i].ideal_az) - da;
+    syncPoints[i].res_alt = pmWrap(syncPoints[i].mach_alt - syncPoints[i].ideal_alt) - de;
+  }
+}
+
+// Correction totale (machine - ideal) au point ideal (a, e).
+static void pmCorr(double a, double e, double *da, double *de) {
+  pmGeom(a, e, da, de);
+  if (numSyncPoints == 0) return;
+  double sw = 1.0 / (PM_R0 * PM_R0), s1 = 0.0, s2 = 0.0;
+  for (int i = 0; i < numSyncPoints; i++) {
+    double d_alt = pmWrap(e - syncPoints[i].ideal_alt);
+    double d_az = pmWrap(a - syncPoints[i].ideal_az);
+    double dd = d_alt * d_alt + d_az * d_az;
+    if (dd < 0.0001) { *da += syncPoints[i].res_az; *de += syncPoints[i].res_alt; return; }
+    double w = 1.0 / dd;
+    sw += w; s1 += w * syncPoints[i].res_az; s2 += w * syncPoints[i].res_alt;
+  }
+  *da += s1 / sw;
+  *de += s2 / sw;
+}
 
 static void rd2mach_at(double ra, double dec, double *mach_alt, double *mach_az, double offset_sec) {
   double ideal_alt, ideal_az;
   ideal_rd2aa_at(ra, dec, &ideal_alt, &ideal_az, offset_sec);
-  
   if (numSyncPoints == 0) {
     *mach_alt = ideal_alt;
     *mach_az = ideal_az;
     return;
   }
-  
-  if (numSyncPoints == 1) {
-    double dAlt = syncPoints[0].mach_alt - syncPoints[0].ideal_alt;
-    double dAz  = syncPoints[0].mach_az - syncPoints[0].ideal_az;
-    *mach_alt = ideal_alt + dAlt;
-    *mach_az = ideal_az + dAz;
-    *mach_az = fmod(*mach_az, 360.0);
-    if (*mach_az < 0) *mach_az += 360.0;
-    return;
-  }
-  
-  double sumWeight = 0.0;
-  double sumDAlt = 0.0;
-  double sumDAz = 0.0;
-  
-  for (int i=0; i<numSyncPoints; i++) {
-    double d_alt = ideal_alt - syncPoints[i].ideal_alt;
-    double d_az = ideal_az - syncPoints[i].ideal_az;
-    if (d_az > 180.0) d_az -= 360.0;
-    if (d_az < -180.0) d_az += 360.0;
-    
-    double distSq = d_alt*d_alt + d_az*d_az;
-    if (distSq < 0.0001) {
-      sumDAlt = syncPoints[i].mach_alt - syncPoints[i].ideal_alt;
-      sumDAz  = syncPoints[i].mach_az - syncPoints[i].ideal_az;
-      sumWeight = 1.0;
-      break;
-    }
-    
-    double weight = 1.0 / distSq;
-    double errAlt = syncPoints[i].mach_alt - syncPoints[i].ideal_alt;
-    double errAz = syncPoints[i].mach_az - syncPoints[i].ideal_az;
-    if (errAz > 180.0) errAz -= 360.0;
-    if (errAz < -180.0) errAz += 360.0;
-    
-    sumDAlt += errAlt * weight;
-    sumDAz += errAz * weight;
-    sumWeight += weight;
-  }
-  
-  *mach_alt = ideal_alt + (sumDAlt / sumWeight);
-  *mach_az = fmod(ideal_az + (sumDAz / sumWeight), 360.0);
+  double da, de;
+  pmCorr(ideal_az, ideal_alt, &da, &de);
+  *mach_alt = ideal_alt + de;
+  *mach_az = fmod(ideal_az + da, 360.0);
   if (*mach_az < 0) *mach_az += 360.0;
 }
 
@@ -773,58 +1076,39 @@ static void rd2mach(double ra, double dec, double *mach_alt, double *mach_az) {
   rd2mach_at(ra, dec, mach_alt, mach_az, 0.0);
 }
 
+// Inverse de rd2mach : on cherche le point ideal dont la correction mene a la
+// position machine (point fixe, corrections petites : 6 tours suffisent).
 static void mach2rd(double mach_alt, double mach_az, long *rs, long *ds) {
-  if (numSyncPoints == 0) {
-    ideal_aa2rd(mach_alt, mach_az, rs, ds);
-    return;
-  }
-  
-  if (numSyncPoints == 1) {
-    double dAlt = syncPoints[0].mach_alt - syncPoints[0].ideal_alt;
-    double dAz  = syncPoints[0].mach_az - syncPoints[0].ideal_az;
-    ideal_aa2rd(mach_alt - dAlt, mach_az - dAz, rs, ds);
-    return;
-  }
-  
-  double sumWeight = 0.0;
-  double sumDAlt = 0.0;
-  double sumDAz = 0.0;
-  
-  for (int i=0; i<numSyncPoints; i++) {
-    double d_alt = mach_alt - syncPoints[i].mach_alt;
-    double d_az = mach_az - syncPoints[i].mach_az;
-    if (d_az > 180.0) d_az -= 360.0;
-    if (d_az < -180.0) d_az += 360.0;
-    
-    double distSq = d_alt*d_alt + d_az*d_az;
-    if (distSq < 0.0001) {
-      sumDAlt = syncPoints[i].mach_alt - syncPoints[i].ideal_alt;
-      sumDAz  = syncPoints[i].mach_az - syncPoints[i].ideal_az;
-      sumWeight = 1.0;
-      break;
+  double ia = mach_az, ie = mach_alt;
+  if (numSyncPoints > 0) {
+    for (int k = 0; k < 6; k++) {
+      double da, de;
+      pmCorr(ia, ie, &da, &de);
+      ia = mach_az - da;
+      ie = mach_alt - de;
     }
-    
-    double weight = 1.0 / distSq;
-    double errAlt = syncPoints[i].mach_alt - syncPoints[i].ideal_alt;
-    double errAz = syncPoints[i].mach_az - syncPoints[i].ideal_az;
-    if (errAz > 180.0) errAz -= 360.0;
-    if (errAz < -180.0) errAz += 360.0;
-    
-    sumDAlt += errAlt * weight;
-    sumDAz += errAz * weight;
-    sumWeight += weight;
+    ia = fmod(ia, 360.0);
+    if (ia < 0) ia += 360.0;
   }
-  
-  double ideal_alt = mach_alt - (sumDAlt / sumWeight);
-  double ideal_az = fmod(mach_az - (sumDAz / sumWeight), 360.0);
-  if (ideal_az < 0) ideal_az += 360.0;
-  
-  ideal_aa2rd(ideal_alt, ideal_az, rs, ds);
+  ideal_aa2rd(ie, ia, rs, ds);
+}
+
+// Bascule de la refraction : les points de synchro gardent des coordonnees
+// ideales coherentes (avec ou sans refraction), puis le modele est refait.
+static void setRefraction(bool on) {
+  if (on == refractionOn) return;
+  if (on) refractionOn = true;
+  for (int i = 0; i < numSyncPoints; i++)
+    refrMount(&syncPoints[i].ideal_alt, &syncPoints[i].ideal_az, on ? +1 : -1);
+  refractionOn = on;
+  pmFit();
 }
 
 
+// Coordonnees ideales de la monture -> AD/dec vraies (refraction retiree).
 static void ideal_aa2rd(double alt, double az, long *rs, long *ds) {
-  if (mountType == 1) { 
+  refrMount(&alt, &az, -1);
+  if (mountType == 1) {  
     *ds = alt * 3600.0;
     double ra = lst() - (az / 15.0);
     while (ra < 0) ra += 24.0;
@@ -1085,6 +1369,12 @@ static void axesFromSteps() {
   if (mountType == 0) {
     if(currAlt < -90.0) currAlt = -90.0;
     if(currAlt >  90.0) currAlt =  90.0;
+  } else if (mountType == 2) {
+    // Allemande : [-90, 270[, comme les cibles (180 - dec du cote retourne).
+    // Ramene a +-180, une dec negative retournee (191 deg pour -11) devenait
+    // -169 : :GD# renvoyait +349 deg et la synchro enregistrait 360 deg d'ecart.
+    while(currAlt < -90.0) currAlt += 360.0;
+    while(currAlt >= 270.0) currAlt -= 360.0;
   } else {
     while(currAlt < -180.0) currAlt += 360.0;
     while(currAlt >  180.0) currAlt -= 360.0;
@@ -1181,6 +1471,14 @@ static double azAxisDeg() {
   return (double)p / AZ_PPD;
 }
 
+// Angle reel de l'axe 2 (sans le ramener a +-180), voir slewToAA().
+static double altAxisDeg() {
+  noInterrupts();
+  long p = altPos;
+  interrupts();
+  return (double)p / ALT_PPD;
+}
+
 static double azSlewDelta(double tAz) {
   if (mountType == 1) return wrap180(tAz) - azAxisDeg();
   double azD = tAz - currAz;
@@ -1203,7 +1501,45 @@ static long azPosFromAz(double az) {
 
 static void clk();
 
+// Rampe du GoTo (frequences de pas de depart et de croisiere, pas d'acceleration),
+// partagee par slewToAA() et estimateSlewSec().
+static void slewRampParams(unsigned long maxS, double *fs, double *ft, unsigned long *accel) {
+  double f_start = 1.0e6 / MAX_DELAY;
+  double f_target = 1.0e6 / stepDelaySlew;
+  // Depart de rampe plafonne en vitesse d'axe : 2 kHz font 0,04 deg/s a 53 333 pas/deg (750:1 en 1/128), mais
+  // 1,6 deg/s d'un coup a 1 280 pas/deg (144:1 en 1/16), un a-coup qui charge les dentures. Sans effet si PPD > 4 444.
+  double ppdMin = (AZ_PPD < ALT_PPD) ? AZ_PPD : ALT_PPD;
+  double f_soft = RAMP_START_DEG_S * ppdMin;
+  if (f_soft < f_start) f_start = (f_soft < 20.0) ? 20.0 : f_soft;
+  if (f_start > f_target) f_start = f_target;
+  unsigned long a = (unsigned long)(0.5 * (f_start + f_target) * 5.0);
+  if (2 * a > maxS) a = maxS / 2;
+  *fs = f_start; *ft = f_target; *accel = a;
+}
+
+// GoTo anticipe : le ciel tourne de 15"/s, et un GoTo de 30 s arrivait 7,5' a
+// cote, rattrape ensuite par le suivi. On vise donc la ou sera l'objet a
+// l'arrivee. Duree estimee d'apres la rampe, corrigee par un facteur appris sur
+// les GoTo precedents (boucle de service, pas par pas des deux axes).
+static double slewTimeFactor = 1.0;
+static double slewEstSec = 0.0;     // estimation du GoTo qui demarre, lue par slewToAA()
+
+static double estimateSlewSec(double tAlt, double tAz) {
+  axesFromSteps();
+  double azD = azSlewDelta(tAz);
+  unsigned long aAS = labs((long)(azD * AZ_PPD));
+  unsigned long aLS = labs((long)((tAlt - altAxisDeg()) * ALT_PPD));
+  unsigned long maxS = max(aAS, aLS);
+  if (maxS == 0) return 0.0;
+  double fs, ft; unsigned long acc;
+  slewRampParams(maxS, &fs, &ft, &acc);
+  double tAcc = (ft > fs * 1.0001) ? (double)acc * log(ft / fs) / (ft - fs) : (double)acc / ft;
+  return 2.0 * tAcc + (double)(maxS - 2 * acc) / ft;
+}
+
 static int slewToAA(double tAlt, double tAz) {
+  double estSec = slewEstSec;   // propre a ce GoTo : remis a zero tout de suite
+  slewEstSec = 0.0;
   if (alarmActive || slewing) return 0;
   double startPhysAlt = getPhysicalAlt();
   double targetAlt = tAlt;
@@ -1225,7 +1561,11 @@ static int slewToAA(double tAlt, double tAz) {
   axesFromSteps();
   double azD=azSlewDelta(tAz);
   long azS=(long)(azD*AZ_PPD);
-  long altS=(long)((tAlt-currAlt)*ALT_PPD);
+  // Depuis l'angle reel de l'axe, pas depuis currAlt ramene a +-180 : en
+  // allemande retournee, une dec negative donne 180 - dec > 180 (191 deg pour
+  // -11 deg), lu -169 dans currAlt. Le GoTo suivant faisait alors tourner l'axe
+  // de 290 deg dans le mauvais sens, tube sous l'horizon, puis alarme et parking.
+  long altS=(long)((tAlt-altAxisDeg())*ALT_PPD);
   unsigned long aAS=abs(azS),aLS=abs(altS);
   unsigned long maxS=max(aAS,aLS);
   if(maxS==0)return 1;
@@ -1248,19 +1588,10 @@ static int slewToAA(double tAlt, double tAz) {
   digitalWrite(LED_BUILTIN,HIGH);
 
   unsigned long minDelay = stepDelaySlew;
-  double f_start = 1.0e6 / MAX_DELAY;
-  double f_target = 1.0e6 / minDelay;
-  // Depart de rampe plafonne en vitesse d'axe : 2 kHz font 0,04 deg/s a 53 333 pas/deg (750:1 en 1/128), mais
-  // 1,6 deg/s d'un coup a 1 280 pas/deg (144:1 en 1/16), un a-coup qui charge les dentures. Sans effet si PPD > 4 444.
-  double ppdMin = (AZ_PPD < ALT_PPD) ? AZ_PPD : ALT_PPD;
-  double f_soft = RAMP_START_DEG_S * ppdMin;
-  if (f_soft < f_start) f_start = (f_soft < 20.0) ? 20.0 : f_soft;
-  if (f_start > f_target) f_start = f_target;
-  
-  unsigned long accel = (unsigned long)(0.5 * (f_start + f_target) * 5.0);
-  if (2 * accel > maxS) {
-    accel = maxS / 2;
-  }
+  double f_start, f_target;
+  unsigned long accel;
+  slewRampParams(maxS, &f_start, &f_target, &accel);
+  unsigned long slewT0 = millis();
 
   uint16_t ramp_table[100];
   if (accel > 0) {
@@ -1394,7 +1725,13 @@ static int slewToAA(double tAlt, double tAz) {
   // L'horloge ne tourne que dans loop() : sans ce rattrapage, l'AD lue ici serait
   // en retard de toute la duree du trajet.
   clk();
+  trackRestartAfterSlew();
   slewAbort=false; slewing=false; updatePos();
+  if (!interrupted && estSec > 1.0) {
+    double r = (millis() - slewT0) / 1000.0 / estSec;
+    r = constrain(r, 0.5, 3.0);
+    slewTimeFactor = 0.6 * slewTimeFactor + 0.4 * r;
+  }
   // Abandon : le suivi repart d'ici, pas de la cible precedente, que :MS ne remplace
   // qu'en cas d'arrivee.
   if (interrupted && tracking) force_tracking_rebase = true;
@@ -1519,6 +1856,16 @@ void doTrackingISR() {
   inISR = false;
 }
 
+// Fin de GoTo : le suivi repart de zero sur la nouvelle cible. doTrack() ne
+// tourne pas pendant le GoTo (boucle bloquante) : il gardait sinon jusqu'a 5 s
+// la base de calcul de l'ancienne cible, et l'ISR sa vitesse jusqu'a 200 ms,
+// d'ou une derive visible quand les GoTo s'enchainent (alignement).
+static void trackRestartAfterSlew() {
+  noInterrupts(); az_add_s = 0; alt_add_s = 0; az_accum = 0; alt_accum = 0; interrupts();
+  trkStartLST = 0.0;
+  lastTrkMs = millis() - 200;
+}
+
 static void doTrack() {
   static double smooth_speed_az = 0.0;
   static double smooth_speed_alt = 0.0;
@@ -1526,6 +1873,7 @@ static void doTrack() {
   if (alarmActive) {
     tracking = false;
     trkStartLST = 0.0;
+    noInterrupts(); az_add_s = 0; alt_add_s = 0; interrupts();
     azStepInterval = 0; altStepInterval = 0;
     azStepsLeft = 0; altStepsLeft = 0;
     smooth_speed_az = 0.0;
@@ -1535,6 +1883,10 @@ static void doTrack() {
 
   if(!tracking||slewing){ 
     trkStartLST = 0.0; 
+    // Sinon l'ISR reprenait l'ancienne vitesse a la fin d'un GoTo, jusqu'au
+    // prochain calcul (200 ms) : ecart de quelques pas, ou bien plus si l'on
+    // suivait pres du pole ou pres du zenith en alt-az.
+    noInterrupts(); az_add_s = 0; alt_add_s = 0; interrupts();
     azStepInterval = 0; altStepInterval = 0;
     azStepsLeft = 0; altStepsLeft = 0;
     smooth_speed_az = 0.0;
@@ -1551,8 +1903,7 @@ static void doTrack() {
 
   if(trkStartLST == 0.0 || force_tracking_rebase) {
     if (force_tracking_rebase) {
-      trkRA = (double)currRA / 3600.0;
-      trkDec = (double)currDEC / 3600.0;
+      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
     }
     trkStartLST = lst();
     lastAzStepUs = micros();
@@ -1576,8 +1927,7 @@ static void doTrack() {
     if (!busy) {
       guiding = false;
       updatePos();
-      trkRA  = (double)currRA  / 3600.0;
-      trkDec = (double)currDEC / 3600.0;
+      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
       last_full_trig_ms = 0;   // force le recalcul de trk_base / trk_speed
     }
   }
@@ -1602,9 +1952,10 @@ static void doTrack() {
   
   if(last_full_trig_ms == 0 || millis() - last_full_trig_ms >= 5000) {
     double current_lst = lst();
-    double tA, tZ;
-    rd2mach_at(trkRA, trkDec, &tA, &tZ, 0.0);
-    double targetAlt = (mountType == 0) ? tA : getAstronomicalAlt(trkRA, trkDec);
+    double tA, tZ, tRA, tDec;
+    trackTargetAt(0.0, &tRA, &tDec);
+    rd2mach_at(tRA, tDec, &tA, &tZ, 0.0);
+    double targetAlt = (mountType == 0) ? tA : getAstronomicalAlt(tRA, tDec);
     if(targetAlt < ALT_MIN){
       tracking=false; limitHit=true; alarmActive=true; trkStartLST=0.0;
       if (!parked) {
@@ -1620,7 +1971,8 @@ static void doTrack() {
     }
     
     double tA_next, tZ_next;
-    rd2mach_at(trkRA, trkDec, &tA_next, &tZ_next, 10.0);
+    trackTargetAt(10.0, &tRA, &tDec);
+    rd2mach_at(tRA, tDec, &tA_next, &tZ_next, 10.0);
     
     double speed_az = tZ_next - tZ;
     if(speed_az > 180.0) speed_az -= 360.0;
@@ -1769,6 +2121,8 @@ static void sendGU(Print& out) {
   } else {
     out.write('o'); 
   }
+  // 't' = compensation complete (refraction) pour le driver INDI, qui l'affiche.
+  if (refractionOn) out.write('t');
   // Extension GotoAndrivet : heure non reglee. Volontairement hors convention
   // OnStep (le driver l'ignore) et place AVANT les chiffres de queue, pour ne
   // pas etre relu comme code d'erreur. goto_andrivet.py cherche ce caractere.
@@ -2076,8 +2430,25 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     rd2mach(ra_h,dec_d,&tA,&tZ);
     double targetAlt = (mountType == 0) ? tA : getAstronomicalAlt(ra_h, dec_d);
     if(targetAlt < ALT_MIN - 0.01){ limitHit=true; out.print(F("1Below horizon#")); return; }
+    // Reference de l'astre suivi (Lune, Soleil) a l'instant de la commande, puis
+    // cible anticipee a l'arrivee (deux passes : la duree depend du trajet).
+    uint8_t rate0 = trackRate;
+    double eR = 0.0, eD = 0.0;
+    bodyAt(rate0, 0.0, &eR, &eD);
+    for (int k = 0; k < 2; k++) {
+      double T = estimateSlewSec(tA, tZ) * slewTimeFactor;
+      if (T > 600.0) T = 600.0;
+      double raT, decT;
+      movingTarget(ra_h, dec_d, rate0, eR, eD, T, &raT, &decT);
+      rd2mach_at(raT, decT, &tA, &tZ, T);
+    }
     out.write('0');
-    if(slewToAA(tA,tZ)){ trkRA=ra_h; trkDec=dec_d; tracking=true; parked=false; }
+    slewEstSec = estimateSlewSec(tA, tZ);
+    if(slewToAA(tA,tZ)){
+      if (trackRate == rate0) setTrkRef(ra_h, dec_d, rate0, eR, eD);
+      else { double r, d; movingTarget(ra_h, dec_d, rate0, eR, eD, 0.0, &r, &d); setTrk(r, d); }
+      tracking=true; parked=false;
+    }
     return;
   }
   if(c1=='M'&&c2=='A'){
@@ -2098,7 +2469,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     out.write('0');
     if(slewToAA(inAlt, inAz)){
       long rs, ds; ideal_aa2rd(inAlt, inAz, &rs, &ds);
-      trkRA  = rs/3600.0; trkDec = ds/3600.0; parked = false;
+      setTrk(rs/3600.0, ds/3600.0); parked = false;
     }
     return;
   }
@@ -2167,7 +2538,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   }
 
   if(c1=='C'&&c2=='M'&&c3=='L'){
-    numSyncPoints = 0; syncIndex = 0;
+    numSyncPoints = 0; syncIndex = 0; pmFit();
     out.print(F("Model Cleared#")); return;
   }
   if(c1=='C'&&c2=='M'){
@@ -2210,8 +2581,9 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
         if (numSyncPoints < MAX_SYNC_POINTS) numSyncPoints++;
     }
     
+    pmFit();
     currRA=inRA; currDEC=inDEC;
-    trkRA=ra_h; trkDec=dec_d; 
+    setTrk(ra_h, dec_d);
     synced=true; updatePos();
     if (tracking) force_tracking_rebase = true;
     saveStateToEEPROM();
@@ -2223,7 +2595,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     ideal_rd2aa_at(ra_h,dec_d,&currAlt,&currAz,0.0);
     azPos=azPosFromAz(currAz); altPos=(long)(currAlt*ALT_PPD);
     currRA=inRA; currDEC=inDEC;
-    trkRA=ra_h; trkDec=dec_d; 
+    setTrk(ra_h, dec_d);
     synced=true; updatePos();
     saveStateToEEPROM();
     out.print(F("N/A#")); return;
@@ -2325,16 +2697,20 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     // trkRA est la cible du GoTo : on n'y touche pas.
     if (!tracking && !slewing) {
       updatePos();
-      trkRA = (double)currRA / 3600.0;
-      trkDec = (double)currDEC / 3600.0;
+      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
     }
     tracking=true; parked=false; enableMotors(true);
     out.write('1'); return;
   }
   if(c1=='T'&&c2=='d'){ tracking=false; out.write('1'); return; }
-  if(c1=='T'&&c2=='Q'){ trackRate=0; out.write('1'); return; }
-  if(c1=='T'&&c2=='L'){ trackRate=1; out.write('1'); return; }
-  if(c1=='T'&&c2=='S'){ trackRate=2; out.write('1'); return; }
+  if(c1=='T'&&c2=='Q'){ setTrackRate(0); out.write('1'); return; }
+  if(c1=='T'&&c2=='L'){ setTrackRate(1); out.write('1'); return; }
+  if(c1=='T'&&c2=='S'){ setTrackRate(2); out.write('1'); return; }
+  // Compensation (driver INDI : "Full Compensation" = :To#, "Refraction" = :Tr#,
+  // "Off" = :Tn#). Ici les deux premieres reviennent au meme : la refraction est
+  // corrigee au pointage et au suivi, sur les deux axes. '1' = accepte.
+  if(c1=='T'&&(c2=='o'||c2=='r')){ setRefraction(true);  out.write('1'); return; }
+  if(c1=='T'&&c2=='n'){ setRefraction(false); out.write('1'); return; }
   // Commandes de suivi acquittees sans effet. Attention a la convention du
   // driver INDI : sendOnStepCommand() renvoie (reponse == '0') et l'appelant
   // teste !sendOnStepCommand(), donc c'est '1' qui fait passer l'interrupteur
@@ -2344,13 +2720,8 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   // :T1#/:T2# (suivi mono-axe / bi-axes) : rien a selectionner ici, le nombre
   // d'axes suivis decoule de la geometrie (les deux en AltAz, l'axe horaire
   // seul en fourche equatoriale). Acquitter est donc exact.
-  if(c1=='T'&&(c2=='R'||c2=='K'||c2=='r'||c2=='n'||c2=='+'||c2=='-'
+  if(c1=='T'&&(c2=='R'||c2=='K'||c2=='+'||c2=='-'
                ||c2=='1'||c2=='2')){ out.write('1'); return; }
-  // :To# = compensation complete, refraction incluse. Non implementee (aucune
-  // correction de refraction dans ce firmware). On repond '0' plutot que '1' :
-  // l'interrupteur reste visible comme non valide cote Ekos au lieu d'afficher
-  // un mode inexistant. Pas de timeout non plus, puisqu'il y a une reponse.
-  if(c1=='T'&&c2=='o'){ out.write('0'); return; }
   if(c1=='A'&&c2=='P'){
     // Suivi arrete (parking, :Td, demarrage) : on suit la ou pointe la
     // monture. trkRA/trkDec gardaient sinon l'ancienne cible (dernier objet
@@ -2359,8 +2730,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     // trkRA est la cible du GoTo : on n'y touche pas.
     if (!tracking && !slewing) {
       updatePos();
-      trkRA = (double)currRA / 3600.0;
-      trkDec = (double)currDEC / 3600.0;
+      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
     }
     tracking=true; parked=false; enableMotors(true);
     saveStateToEEPROM(); return;

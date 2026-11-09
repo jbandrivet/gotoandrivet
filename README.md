@@ -71,7 +71,7 @@ disponibles sous Windows : caméras ZWO, focuseur EAF, astrométrie et guidage. 
 * **`mise_a_jour.py`** : La mise à jour en ligne depuis GitHub, commune à la carte du ciel et à l'utilitaire de configuration.
 * **`outils/`** : Le générateur de `ciel_donnees.py` (il télécharge les catalogues auprès du CDS, de Stellarium et d'OpenNGC).
 * **`mega_monture/`** : Le firmware classique (1 étoile) pour le contrôleur Arduino Mega 2560.
-* **`teensy_monture/`** : Le nouveau firmware haute performance pour contrôleur Teensy 4.1 (Inclut le Modèle de Pointage N-Étoiles par interpolation IDW).
+* **`teensy_monture/`** : Le nouveau firmware haute performance pour contrôleur Teensy 4.1 (inclut le modèle de pointage : défauts de la monture calculés sur 50 étoiles au plus).
 * **`teensy_raquette/`** : Le firmware C++ pour la raquette physique avec écran LCD (sur Teensy 4.1).
 
 ---
@@ -175,7 +175,7 @@ Le projet vous permet de choisir le cerveau principal de la monture. Bien que le
 | **Vitesse de calcul** | 16 MHz (8-bit) | **600 MHz** (32-bit ARM) |
 | **Précision (Maths)** | Flottants 32-bit lents | **Flottants 64-bit (double)** natifs ultra-rapides |
 | **Microstepping & Vitesse max**| Limité (saturera à très haut microstepping) | **Parfait** (génère des impulsions à plus de 200kHz sans sourciller) |
-| **Modèle de pointage** | Basique | **N-Étoiles** (50 points mémorisés avec calculs IDW) |
+| **Modèle de pointage** | Synchro à une étoile | **Défauts de la monture** calculés sur 50 étoiles au plus |
 | **Evolutivité (Futur)** | Faible | **Très haute** (Port USB Host pour Manette/Gamepad) |
 | **Coût** | ~15-20€ (Clones pas chers) | ~35-40€ |
 
@@ -208,7 +208,10 @@ Pour monter votre système GotoAndrivet, les composants matériels suivants sont
 
 ## Fonctionnalités Avancées
 
-* **Modèle de Pointage N-Étoiles (Teensy Monture uniquement)** : Interpolation des erreurs de suivi et de pointage par IDW (Inverse Distance Weighting) jusqu'à 50 étoiles mémorisées. Support de la commande de remise à zéro `:CML#`.
+* **Modèle de pointage (Teensy Monture uniquement)** : à partir de 50 étoiles de synchro au plus, la carte calcule les défauts de la monture (décalage des axes, mise en station, tube pas d'équerre, axes pas perpendiculaires, flexion), puis interpole ce qui reste pour tomber juste sur chaque étoile. Remise à zéro par `:CML#`.
+* **Suivi de la Lune et du Soleil calculé** (les deux cartes) : position de l'astre recalculée en continu, en ascension droite et en déclinaison.
+* **Réfraction corrigée** (les deux cartes) : au GoTo et au suivi, réglable depuis Ekos (*Compensation*, `:To#` / `:Tn#`).
+* **GoTo anticipé** (les deux cartes) : la carte vise l'endroit où sera l'objet à l'arrivée.
 * **Ajout du type de monture `GermanEq`** : Le firmware de l'Arduino Mega calcule automatiquement les inversions d'axes (Ascension Droite et Déclinaison) lors du franchissement du méridien.
 * **Commande standard `:Gm#` implémentée** : Renvoie le *Pier Side* (`E#` pour l'Est, `W#` pour l'Ouest, `N#` pour les autres modes) requis pour les logiciels de guidage comme Ekos/INDI.
 * **Commande standard `:D#` implémentée** : Permet l'interrogation dynamique du statut de pointage (Slewing), accélérant drastiquement le modèle de pointage automatique ZWO en évitant les pauses fixes.
