@@ -99,7 +99,7 @@ Chaque synchro (`:CM#`, par exemple après une photo résolue par astrométrie) 
 | NP | Les deux axes ne sont pas perpendiculaires |
 | TF | Flexion du tube (alt-az seulement) |
 
-Avec 1 étoile, seul le décalage est corrigé ; avec 2, la mise en station s'ajoute ; à partir de 3, tous les termes. Ce qui reste à chaque étoile est ensuite interpolé, pour tomber juste sur les étoiles de synchro ; loin d'elles, seuls les défauts calculés servent. Sur monture simulée (décalages de 2°, mise en station fausse de 1°), 5 étoiles donnent 0,3 à 1,8′ d'erreur médiane sur tout le ciel, contre 11 à 56′ avec l'ancienne interpolation seule. `:CML#` efface le modèle. La Mega garde la synchro à une étoile (elle recale les axes).
+Avec 1 étoile, seul le décalage est corrigé ; avec 2, la mise en station s'ajoute ; à partir de 3, tous les termes. Ce qui reste à chaque étoile est ensuite interpolé, pour tomber juste sur les étoiles de synchro ; loin d'elles, seuls les défauts calculés servent. Sur monture simulée (décalages de 2°, mise en station fausse de 1°), 5 étoiles donnent 0,3 à 1,8′ d'erreur médiane sur tout le ciel, contre 11 à 56′ avec l'ancienne interpolation seule. `:CML#` efface le modèle. Il est gardé en mémoire : après une extinction en position de parking, la monture pointe comme avant. Il est oublié si elle a été éteinte hors du parking (sa position n'est plus connue), si la mécanique change (type de monture, rapports, micro-pas, sens d'un axe), et si la première synchro après le démarrage tombe à plus de 15′ du modèle (monture remontée ou déplacée). La Mega garde la synchro à une étoile (elle recale les axes).
 
 ---
 

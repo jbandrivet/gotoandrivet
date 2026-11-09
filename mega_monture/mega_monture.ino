@@ -2527,6 +2527,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     if (slewing) { out.write('0'); return; }
     out.write('1'); 
     tracking=false;
+    bool arrived = true;
     if (!alarmActive) {
       double pAlt = parkAlt;
       double pAz = parkAz;
@@ -2534,9 +2535,12 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
       aa2rd(pAlt, pAz, &pRA, &pDEC);
       inRA = pRA;
       inDEC = pDEC;
-      slewToAA(pAlt, pAz);
+      arrived = (slewToAA(pAlt, pAz) != 0);
     }
-    parked=true;
+    // Arret (:Q#) pendant le trajet : la monture n'est pas au parking et ne doit
+    // pas se dire parquee (au redemarrage, elle se croirait au parking). La
+    // butee basse, elle, la parque deja dans slewToAA (alarmActive).
+    if (arrived || alarmActive) { parked=true; }
     saveStateToEEPROM();
     return;
   }

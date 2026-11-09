@@ -207,6 +207,10 @@ const uint16_t EEPROM_ADDR_TMC_MS_FOCUS = 114;  // uint16
 const uint16_t EEPROM_ADDR_TMC_MAGIC    = 116;
 const byte     EEPROM_MAGIC         = 0x5F;
 const byte     EEPROM_TMC_MAGIC     = 0xA5;
+// Modele de pointage : magic, nombre de points, index du prochain, refraction
+// (coordonnees ideales avec ou sans), puis les points (4 double chacun).
+const uint16_t EEPROM_ADDR_PM       = 256;   // 4 + 50 x 32 = 1604 octets
+const byte     EEPROM_PM_MAGIC      = 0xC7;
 
 template <typename T>
 void eepromWrite(int address, const T& value) {
@@ -263,8 +267,14 @@ static void saveStateToEEPROM() {
 
 static void mach2rd(double mach_alt, double mach_az, long *rs, long *ds);
 static long azPosFromAz(double az);
+static void pmLoad(bool wasParked);
+static void pmSave();
+static void pmClear();
 
 static void loadStateFromEEPROM() {
+  // Etat du parking a l'extinction, lu avant toute ecriture.
+  bool wasParked = (EEPROM.read(EEPROM_ADDR_MAGIC) == EEPROM_MAGIC) &&
+                   (EEPROM.read(EEPROM_ADDR_PARKED) == 1);
   if (EEPROM.read(EEPROM_ADDR_MAGIC) == EEPROM_MAGIC) {
     mountType = EEPROM.read(EEPROM_ADDR_MOUNT_TYPE);
     buzzerEnabled = (EEPROM.read(EEPROM_ADDR_BUZZER) == 1);
@@ -357,6 +367,7 @@ static void loadStateFromEEPROM() {
   tracking = false;
 
   recalculatePPD();
+  pmLoad(wasParked);   // avant mach2rd : la position de parking passe par le modele
 
   // Monture declaree parquee : elle est a sa position de parking (et non a
   // az = 0, faux en allemande parquee contrepoids en bas).
@@ -952,6 +963,10 @@ static void ideal_rd2aa_at(double ra, double dec, double *alt, double *az, doubl
 // 20' pour l'interpolation seule qu'utilisait le firmware jusque-la.
 #define PM_NPAR 7
 #define PM_R0   20.0
+// Premier sync apres un redemarrage : au-dela de cet ecart (deg) avec le modele
+// garde en memoire, la monture a ete remontee ou deplacee, le modele est efface.
+#define PM_REUSE_MAX 0.25
+static bool pmFromMemory = false;   // modele relu en memoire, pas encore confirme par un sync
 static double pmPar[PM_NPAR];   // IH ID P Q CH NP TF, en degres
 static uint8_t pmUsed = 0;      // nombre de termes ajustes
 
@@ -1101,6 +1116,64 @@ static void setRefraction(bool on) {
   for (int i = 0; i < numSyncPoints; i++)
     refrMount(&syncPoints[i].ideal_alt, &syncPoints[i].ideal_az, on ? +1 : -1);
   refractionOn = on;
+  pmFit();
+  pmSave();
+}
+
+// Le modele (points de synchro) est garde en memoire : apres un redemarrage
+// parque, la monture pointe comme avant l'extinction. Les residus sont
+// recalcules par pmFit(), seuls les points sont ecrits.
+static void pmSave() {
+  EEPROM.update(EEPROM_ADDR_PM, 0);                // invalide pendant l'ecriture
+  EEPROM.update(EEPROM_ADDR_PM + 1, (byte)numSyncPoints);
+  EEPROM.update(EEPROM_ADDR_PM + 2, (byte)syncIndex);
+  EEPROM.update(EEPROM_ADDR_PM + 3, refractionOn ? 1 : 0);
+  for (int i = 0; i < numSyncPoints; i++) {
+    int a = EEPROM_ADDR_PM + 4 + 32 * i;
+    eepromWrite(a,      syncPoints[i].ideal_az);
+    eepromWrite(a + 8,  syncPoints[i].ideal_alt);
+    eepromWrite(a + 16, syncPoints[i].mach_az);
+    eepromWrite(a + 24, syncPoints[i].mach_alt);
+  }
+  EEPROM.update(EEPROM_ADDR_PM, EEPROM_PM_MAGIC);
+}
+
+static void pmClear() {
+  numSyncPoints = 0; syncIndex = 0; pmFromMemory = false;
+  pmFit();
+  pmSave();
+}
+
+// Au demarrage. Le modele n'est repris que si la monture etait parquee a
+// l'extinction : sinon sa position n'est plus connue et les points seraient faux.
+static void pmLoad(bool wasParked) {
+  numSyncPoints = 0; syncIndex = 0; pmFromMemory = false;
+  if (EEPROM.read(EEPROM_ADDR_PM) == EEPROM_PM_MAGIC) {
+    int n = EEPROM.read(EEPROM_ADDR_PM + 1);
+    int idx = EEPROM.read(EEPROM_ADDR_PM + 2);
+    bool refr = (EEPROM.read(EEPROM_ADDR_PM + 3) == 1);
+    bool ok = wasParked && n >= 1 && n <= MAX_SYNC_POINTS && idx < MAX_SYNC_POINTS;
+    for (int i = 0; ok && i < n; i++) {
+      int a = EEPROM_ADDR_PM + 4 + 32 * i;
+      SyncPoint &p = syncPoints[i];
+      eepromRead(a,      p.ideal_az);
+      eepromRead(a + 8,  p.ideal_alt);
+      eepromRead(a + 16, p.mach_az);
+      eepromRead(a + 24, p.mach_alt);
+      ok = isfinite(p.ideal_az) && isfinite(p.ideal_alt) && isfinite(p.mach_az) && isfinite(p.mach_alt)
+           && fabs(p.ideal_az) <= 720.0 && fabs(p.mach_az) <= 720.0
+           && p.ideal_alt >= -180.0 && p.ideal_alt <= 270.0
+           && p.mach_alt  >= -180.0 && p.mach_alt  <= 270.0;
+    }
+    if (ok) {
+      numSyncPoints = n; syncIndex = idx; pmFromMemory = true;
+      bool want = refractionOn;
+      refractionOn = refr;            // coordonnees ideales telles qu'enregistrees
+      if (refr != want) { setRefraction(want); return; }
+    } else if (n != 0) {
+      pmSave();                       // efface : il ne doit pas revenir plus tard
+    }
+  }
   pmFit();
 }
 
@@ -1416,6 +1489,7 @@ static void updatePos() {
 static void changeMechanics() {
   double oldAzPPD = AZ_PPD, oldAltPPD = ALT_PPD;
   recalculatePPD();
+  if (AZ_PPD != oldAzPPD || ALT_PPD != oldAltPPD) pmClear();   // points mesures avec l'ancienne mecanique
   noInterrupts();
   azPos  = lround((double)azPos  * AZ_PPD  / oldAzPPD);
   altPos = lround((double)altPos * ALT_PPD / oldAltPPD);
@@ -2538,7 +2612,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   }
 
   if(c1=='C'&&c2=='M'&&c3=='L'){
-    numSyncPoints = 0; syncIndex = 0; pmFit();
+    pmClear();
     out.print(F("Model Cleared#")); return;
   }
   if(c1=='C'&&c2=='M'){
@@ -2554,6 +2628,18 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     
     double mach_az_norm = fmod(currAz, 360.0);
     if(mach_az_norm < 0) mach_az_norm += 360.0;
+
+    // Premier sync apres un redemarrage, avec le modele garde en memoire : s'il
+    // s'en ecarte de plus de PM_REUSE_MAX, la monture a ete remontee, deplacee
+    // ou a perdu sa position. L'ancien modele est efface avant d'ajouter ce point.
+    if (pmFromMemory) {
+      pmFromMemory = false;
+      double da, de;
+      pmCorr(ideal_az, ideal_alt, &da, &de);
+      double ea = pmWrap(mach_az_norm - ideal_az - da) * cos(currAlt * DEG_TO_RAD);
+      double ee = currAlt - ideal_alt - de;
+      if (sqrt(ea * ea + ee * ee) > PM_REUSE_MAX) pmClear();
+    }
 
     int foundIdx = -1;
     for(int i=0; i<numSyncPoints; i++) {
@@ -2582,6 +2668,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     }
     
     pmFit();
+    pmSave();
     currRA=inRA; currDEC=inDEC;
     setTrk(ra_h, dec_d);
     synced=true; updatePos();
@@ -2817,7 +2904,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
         parkAlt = homeAlt(newType);
         parkAz  = homeAz(newType);
       }
-      mountType = newType;
+      if (newType != mountType) { mountType = newType; pmClear(); }
       saveStateToEEPROM();
       out.print(F("1#")); return;
     } else {
@@ -2846,8 +2933,8 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   if(c1=='B' && c2=='R'){
     if(ci>=5) {
       bool rev = (cmd[4]=='1');
-      if(c3=='a') azReversed = rev;
-      else if(c3=='e') altReversed = rev;
+      bool &r = (c3=='a') ? azReversed : altReversed;
+      if ((c3=='a' || c3=='e') && rev != r) { r = rev; pmClear(); }
       saveStateToEEPROM();
       out.print(F("1#")); return;
     } else {
@@ -2895,6 +2982,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     if (slewing) { out.write('0'); return; }
     out.write('1'); 
     tracking=false;
+    bool arrived = true;
     if (!alarmActive) {
       double pAlt = parkAlt;
       double pAz = parkAz;
@@ -2902,9 +2990,12 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
       mach2rd(pAlt, pAz, &pRA, &pDEC);
       inRA = pRA;
       inDEC = pDEC;
-      slewToAA(pAlt, pAz);
+      arrived = (slewToAA(pAlt, pAz) != 0);
     }
-    parked=true; enableMotors(false);
+    // Arret (:Q#) pendant le trajet : la monture n'est pas au parking et ne doit
+    // pas se dire parquee (au redemarrage, elle se croirait au parking). La
+    // butee basse, elle, la parque deja dans slewToAA (alarmActive).
+    if (arrived || alarmActive) { parked=true; enableMotors(false); }
     saveStateToEEPROM();
     return;
   }
