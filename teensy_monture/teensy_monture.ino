@@ -656,12 +656,17 @@ static double lst() {
   return lst_offset(0.0);
 }
 
+// Facteurs d'avance de l'angle horaire, rapportes au sideral (1,0) :
+// Lune : elle avance de 360/27,3217 = 13,176 deg/jour vers l'est, son angle horaire
+// tourne donc a (360,9856 - 13,176) / 360,9856 = 0,963499, soit 14,492"/s.
+// L'ancienne valeur 0,976327 (14,685"/s, reprise de la doc ASCOM) laissait deriver
+// la Lune d'environ 12' d'arc par heure. Soleil : 360 / 360,9856 = 0,997270.
 static double getHourAngle(double ra) {
   double current_lst = lst();
   double ha_hours;
   if (tracking && trkStartLST > 0.0) {
     double scale = 1.0;
-    if (trackRate == 1)      scale = 0.976327; 
+    if (trackRate == 1)      scale = 0.963499; 
     else if (trackRate == 2) scale = 0.997270; 
     double elapsed = current_lst - trkStartLST;
     if (elapsed < -12.0) elapsed += 24.0;
@@ -677,7 +682,7 @@ static double getHourAngle(double ra) {
 
 static void ideal_rd2aa_at(double ra, double dec, double *alt, double *az, double offset_sec) {
   double scale = 1.0;
-  if (trackRate == 1)      scale = 0.976327;
+  if (trackRate == 1)      scale = 0.963499;
   else if (trackRate == 2) scale = 0.997270;
   
   double l = lst_offset(offset_sec * scale);

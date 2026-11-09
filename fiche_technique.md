@@ -82,7 +82,7 @@ $$PPD = \frac{\text{Pas Moteur} \times \text{Microstepping} \times \text{Rapport
 ## 5. Modes de Suivi (Tracking)
 
 *   **Suivi Sidéral (Ciel profond) :** Calculé en temps réel toutes les 500 ms à partir du Temps Sidéral Local (LST) de l'horloge.
-*   **Suivi Lunaire (`:TL#`) :** Vitesse de l'angle horaire (HA) ralentie de **~2,37%** (facteur d'échelle `0.976327`) pour compenser le déplacement orbital de la Lune.
+*   **Suivi Lunaire (`:TL#`) :** Vitesse de l'angle horaire (HA) ralentie de **~3,65 %** (facteur d'échelle `0.963499`, soit 14,492″/s) pour compenser le déplacement de la Lune sur son orbite (13,18° par jour vers l'est).
 *   **Suivi Solaire (`:TS#`) :** Vitesse ralentie de **~0,27%** (facteur d'échelle `0.997270`) pour compenser le mouvement orbital de la Terre.
 
 ---
