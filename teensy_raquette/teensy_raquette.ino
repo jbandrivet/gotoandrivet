@@ -1278,7 +1278,9 @@ String mega_cmd(const String &cmd, bool needsReply=true){
             if (resp_len < 127) {
                 resp_buf[resp_len++] = c;
             }
-            if (cmd.startsWith(":S") && !cmd.startsWith(":SC") && !cmd.startsWith(":SL") && !cmd.startsWith(":SG") && resp_len == 1) {
+            // :SC repond "1" seul depuis le 2026-11-17 (comme OnStep) ; une ancienne
+            // monture ajoute "Updating#...#", vide au debut de la commande suivante.
+            if (cmd.startsWith(":S") && !cmd.startsWith(":SL") && !cmd.startsWith(":SG") && resp_len == 1) {
                 if (resp_buf[0] == '0' || resp_buf[0] == '1') {
                     resp_buf[resp_len] = '\0';
                     return String(resp_buf);
@@ -1353,7 +1355,9 @@ void pollMega(){
 
     String gu = mega_cmd(":GU");
     if(gu.length() > 0) {
-        m_timeSet = (gu.indexOf('F') < 0);
+        // Heure non reglee = '?' depuis le firmware monture v9.3 ('F' avant, qui veut
+        // dire "parking echoue" chez OnStep) : la raquette la croyait toujours reglee.
+        m_timeSet = (gu.indexOf('?') < 0);
     }
 
     String ra=mega_cmd(":GR"), dec=mega_cmd(":GD");

@@ -15,6 +15,18 @@ from datetime import datetime, timezone
 # Ajouter le répertoire courant au chemin d'importation
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from goto_andrivet import ALL_CATALOGS, Astro, Settings, Mount
+
+
+def lire_reponse_sc(ser):
+    """Lit la réponse à :SC. Le firmware répond "1" (comme OnStep) depuis le
+    2026-11-17, "1Updating#...#" avant : on lit le premier caractère puis on vide
+    le reste, ce qui convient aux deux."""
+    r = ser.read(1)
+    time.sleep(0.15)
+    ser.reset_input_buffer()
+    return r
+
+
 import ephem
 
 class VirtualTeensyApp(tk.Tk):
@@ -482,7 +494,7 @@ class VirtualTeensyApp(tk.Tk):
                 now = datetime.now()
                 # 1. Date
                 self.ser.write(f":SC{now.month:02d}/{now.day:02d}/{now.year%100:02d}#".encode('ascii'))
-                self.ser.read_until(b"#")
+                lire_reponse_sc(self.ser)
                 
                 # 2. Time
                 self.ser.write(f":SL{now.hour:02d}:{now.minute:02d}:{now.second:02d}#".encode('ascii'))

@@ -469,7 +469,9 @@ class Mount:
                 # discussion) peut avaler la première question (vu sous Windows avec un Teensy).
                 for _ in range(2):
                     s.write(b":GVP#")
-                    if b"OnStep" in s.read_until(b"#", 32): return True
+                    r = s.read_until(b"#", 32)
+                    # "On-Step" depuis 2026-11-17 (comme OnStep), "OnStep" avant.
+                    if b"On-Step" in r or b"OnStep" in r: return True
                 return False
         except Exception:
             return False
@@ -496,7 +498,7 @@ class Mount:
                 self._ser.reset_input_buffer()
                 self._ser.write((cmd+"#").encode())
                 if not reply: return ""
-                if cmd.startswith((":Sr", ":Sd", ":St", ":Sg", ":SG", ":SL", ":Bv", ":BV", ":U", ":Rg", ":hQ")):
+                if cmd.startswith((":Sr", ":Sd", ":St", ":Sg", ":SG", ":SL", ":SC", ":Bv", ":BV", ":U", ":Rg", ":hQ")):
                     return self._ser.read(1).decode(errors='replace').strip()
                 r=b""; dl=time.time()+self.cfg.get("mount_timeout",0.5)
                 while time.time()<dl:
@@ -805,9 +807,9 @@ class Mount:
         else:
             self.state.is_onstep = False
 
-        # Le nom du firmware est l'indicateur le plus fiable. Le test cherchait
-        # "on-step" dans le nom mis en minuscules, ce qui ne pouvait pas
-        # matcher "OnStep" (sans tiret) — la valeur que renvoie :GVP#.
+        # Le nom du firmware est l'indicateur le plus fiable. :GVP# renvoie
+        # "On-Step" (comme un vrai OnStep) depuis 2026-11-17, "OnStep" avant :
+        # le tiret est retiré pour reconnaître les deux.
         if "onstep" in self.state.firmware_name.lower().replace('-', ''):
             self.state.is_onstep = True
 

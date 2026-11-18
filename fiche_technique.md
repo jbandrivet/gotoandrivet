@@ -29,7 +29,7 @@ Le projet **Goto-Andrivet** propose désormais deux versions différentes pour l
 *   **Liaison USB (PC / ASIAir / INDI) :** **38 400 bauds** (Vitesse optimisée pour la télémétrie en temps réel).
 *   **Liaison Série PC (Connecteur PCB 4 broches / Serial6) :** **38 400 bauds** (Idéal pour câbles très longs avec adaptateur TTL/RS485).
 *   **Liaison Raquette (Connecteur DIN 4 broches / Serial3) :** **38 400 bauds**.
-*   **Protocole :** Meade LX200 avec extensions OnStep (supporté par KStars/Ekos, Stellarium, SkySafari).
+*   **Protocole :** Meade LX200 avec extensions OnStep, réponses identiques à celles d'un vrai OnStep. Sous Linux : KStars/Ekos, PHD2 et tous les logiciels INDI (pilote *LX200 OnStep*). Sous Windows : NINA, PHD2 et tous les logiciels ASCOM (pilote *ASCOM OnStep*, réglé sur 38 400 bauds). Aussi Stellarium et SkySafari.
 
 ---
 

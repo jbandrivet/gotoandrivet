@@ -210,6 +210,7 @@ Pour monter votre système GotoAndrivet, les composants matériels suivants sont
 
 * **Modèle de pointage (Teensy Monture uniquement)** : à partir de 50 étoiles de synchro au plus, la carte calcule les défauts de la monture (décalage des axes, mise en station, tube pas d'équerre, axes pas perpendiculaires, flexion), puis interpole ce qui reste pour tomber juste sur chaque étoile. Le modèle est gardé en mémoire d'une soirée à l'autre si la monture est éteinte parquée. Remise à zéro par `:CML#` (bouton « Effacer le modèle » du module caméra).
 * **Suivi de la Lune et du Soleil calculé** (les deux cartes) : position de l'astre recalculée en continu, en ascension droite et en déclinaison.
+* **Compatible INDI et ASCOM** (les deux cartes) : testé le 18/11/2026 avec un vrai Teensy, sous Linux avec le pilote INDI *LX200 OnStep* (Ekos) et sous Windows avec NINA et le pilote *ASCOM OnStep* : GoTo des deux côtés du pilier, guidage, synchronisation, Lune/Soleil/sidéral, jeu, arrêt, parking.
 * **Réfraction corrigée** (les deux cartes) : au GoTo et au suivi, réglable depuis Ekos (*Compensation*, `:To#` / `:Tn#`).
 * **GoTo anticipé** (les deux cartes) : la carte vise l'endroit où sera l'objet à l'arrivée.
 * **Ajout du type de monture `GermanEq`** : Le firmware de l'Arduino Mega calcule automatiquement les inversions d'axes (Ascension Droite et Déclinaison) lors du franchissement du méridien.

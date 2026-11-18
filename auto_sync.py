@@ -6,6 +6,16 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+
+def lire_reponse_sc(ser):
+    """Lit la réponse à :SC. Le firmware répond "1" (comme OnStep) depuis le
+    2026-11-17, "1Updating#...#" avant : on lit le premier caractère puis on vide
+    le reste, ce qui convient aux deux."""
+    r = ser.read(1)
+    time.sleep(0.15)
+    ser.reset_input_buffer()
+    return r
+
 def main():
     if len(sys.argv) > 1:
         port = sys.argv[1]
@@ -27,7 +37,7 @@ def main():
         
         # 1. Date
         ser.write(f":SC{now.month:02d}/{now.day:02d}/{now.year%100:02d}#".encode('ascii'))
-        ser.read_until(b"#")
+        lire_reponse_sc(ser)
         
         # 2. Heure
         ser.write(f":SL{now.hour:02d}:{now.minute:02d}:{now.second:02d}#".encode('ascii'))

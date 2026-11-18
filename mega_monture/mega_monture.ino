@@ -340,6 +340,7 @@ static char lxRA[12]="00:00:00#";
 static char lxDEC[14]="+90*00:00#";
 
 #define CMD_MAX 40
+#define SLEW_SERVE_MARGIN_US 2500UL   // temps garde pour traiter une commande entre deux pas lents
 static char cmdUsb[CMD_MAX];   static uint8_t ciUsb=0;
 static char cmdRj[CMD_MAX];    static uint8_t ciRj=0;
 
@@ -1135,28 +1136,36 @@ static void changeMechanics() {
 
 static void processCmd(const char* cmd, uint8_t ci, Print& out);
 
+// Lit tout ce qui est arrive, mais traite AU PLUS UNE commande par appel : une
+// commande coute quelques dizaines de microsecondes, a ne pas cumuler entre deux
+// pas. Le reste attend dans le tampon du port l'appel suivant. Avant, un seul
+// caractere etait lu par appel : ":GX96#" attendait 6 appels (~95 ms en GoTo, bien
+// plus en debut de rampe), au-dela des 100 ms du driver INDI ("Communication error").
 static void slewServeOne(Stream& in, Print& out, char* buf, uint8_t& bi) {
-  if(!in.available()) return;
-  char c = in.read();
-  if(c==' '||c=='\r') return;
-  if(c==6) {
-    if (mountType == 2) out.write('G');
-    else if (mountType == 1) out.write('P');
-    else out.write('A');
-    return;
-  }
-  if(c=='#'||c=='\n') {
-    buf[bi]='\0';
-    if(bi>0 && buf[0]==':') {
-      if(buf[1]=='Q' || buf[1]=='K') {
-        slewAbort = true;
-      }
-      processCmd(buf, bi, out);
+  while(in.available()) {
+    char c = in.read();
+    if(c==' '||c=='\r') continue;
+    if(c==6) {
+      if (mountType == 2) out.write('G');
+      else if (mountType == 1) out.write('P');
+      else out.write('A');
+      continue;
     }
-    bi=0;
-    return;
+    if(c=='#'||c=='\n') {
+      buf[bi]='\0';
+      bool isCmd = (bi>0 && buf[0]==':');
+      if(isCmd) {
+        if(buf[1]=='Q' || buf[1]=='K') {
+          slewAbort = true;
+        }
+        processCmd(buf, bi, out);
+      }
+      bi=0;
+      if(isCmd) return;
+      continue;
+    }
+    if(bi<CMD_MAX-1) buf[bi++]=c; else bi=0;
   }
-  if(bi<CMD_MAX-1) buf[bi++]=c; else bi=0;
 }
 
 // ======================== SLEW =============================
@@ -1338,6 +1347,24 @@ static int slewToAA(double tAlt, double tAz) {
   unsigned long err = bresS / 2;
   bool azIsMajor = (aAS >= aLS);
 
+  // Sert les ports et traite une demande d'arret ; true = sortir tout de suite.
+  unsigned long lastServeUs = micros();
+  auto slewServe = [&](unsigned long i) -> bool {
+    slewServeOne(Serial,  Serial,  sbUsb, sbiUsb);
+    slewServeOne(Serial3, Serial3, sbRj,  sbiRj);
+    lastServeUs = micros();
+    if(slewAbort && !interrupting) {
+      interrupting = true;
+      interrupted = true;
+      unsigned long remaining_slew = maxS - i;
+      unsigned long decelSteps = (i < accel) ? i : accel;
+      if (decelSteps > remaining_slew) decelSteps = remaining_slew;
+      if (decelSteps > 0) maxS = i + decelSteps;
+      else return true;
+    }
+    return false;
+  };
+
   for(unsigned long i=0;i<maxS;i++){
     unsigned long loopStart = micros();
 
@@ -1413,25 +1440,28 @@ static int slewToAA(double tAlt, double tAz) {
     }
 
     if ((i & 31) == 0) {
-      slewServeOne(Serial,  Serial,  sbUsb, sbiUsb);
-      slewServeOne(Serial3, Serial3, sbRj,  sbiRj);
-      if(slewAbort && !interrupting) { 
-        interrupting = true;
-        interrupted = true; 
-        unsigned long remaining_slew = maxS - i;
-        unsigned long decelSteps = (i < accel) ? i : accel;
-        if (decelSteps > remaining_slew) decelSteps = remaining_slew;
-        
-        if (decelSteps > 0) {
-          maxS = i + decelSteps;
-        } else {
-          break;
-        }
-      }
+      if (slewServe(i)) break;
     }
 
-    unsigned long elapsed = micros() - loopStart;
-    if(dl > elapsed) delayMicroseconds(dl - elapsed);
+    // Attente du pas suivant. Quand elle est longue (debut et fin de rampe, jusqu'a
+    // 50 ms par pas au depart doux), les ports sont servis pendant l'attente, au moins
+    // toutes les millisecondes : sinon une commande, et meme un Stop, attendait
+    // 32 pas, soit plus d'une seconde. SLEW_SERVE_MARGIN_US laisse le temps de
+    // traiter une commande sans retarder le pas.
+    bool stopNow = false;
+    for (;;) {
+      unsigned long elapsed = micros() - loopStart;
+      if (elapsed >= dl) break;
+      unsigned long left = dl - elapsed;
+      if (left <= SLEW_SERVE_MARGIN_US) { delayMicroseconds(left); break; }
+      if (micros() - lastServeUs >= 1000UL) {
+        if (slewServe(i)) { stopNow = true; break; }
+        continue;
+      }
+      unsigned long w = left - SLEW_SERVE_MARGIN_US;
+      delayMicroseconds(w < 100 ? w : 100);
+    }
+    if (stopNow) break;
   }
 
   long azDelta  = (azS  >= 0) ?  (long)azCnt  : -(long)azCnt;
@@ -1828,8 +1858,10 @@ static void sendGU(Print& out) {
   else                     out.write('A');
   
   if (mountType == 2) {
-    if (currAlt >= -90.0 && currAlt <= 90.0) out.write('e');
-    else out.write('w');
+    // Cote du pilier comme OnStep : 'T' = est, 'W' = ouest ('e'/'w' avant ; pour
+    // OnStep 'e' signifie "sync sur codeurs seulement" et 'w' "attente au zero").
+    if (currAlt >= -90.0 && currAlt <= 90.0) out.write('T');
+    else out.write('W');
   } else {
     out.write('o'); 
   }
@@ -1910,6 +1942,15 @@ static void handleGX(const char* cmd, Print& out) {
     else                     out.print(F("A#"));   // AltAz
     return;
   }
+  // :GXEE# : systeme de coordonnees, comme OnStep (0 = lieu observe, 1 = topocentrique
+  // avec refraction). UN SEUL caractere, SANS "#" : le pilote ASCOM OnStep lit un
+  // caractere ; un "#" en trop restait dans son tampon et decalait toutes les
+  // reponses suivantes ("Le format de la chaine d'entree est incorrect").
+  if(g1=='E'&&g2=='E'){ out.write(refractionOn ? '1' : '0'); return; }
+  // :GXEF# : bras tangent en declinaison, meme forme (1 caractere sans "#").
+  if(g1=='E'&&g2=='F'){ out.write('0'); return; }
+  // :GXE6# : pas par seconde de l'axe 1 au suivi sideral (lu par le pilote ASCOM).
+  if(g1=='E'&&g2=='6'){ out.print(AZ_PPD * 15.041067 / 3600.0, 6); out.write('#'); return; }
   if(g1=='E'){ out.print(F("0#")); return; }
   if(g1=='F'){ out.print(F("20.0#")); return; }
   out.print(F("0#"));
@@ -1979,6 +2020,24 @@ static long parseSrSeconds(const char* s, uint8_t len) {
 
 // ======================== PROCESSCMD =======================
 
+// Hauteur et azimut reels (nord = 0, est = 90) de la position courante. En AltAz ce
+// sont les axes ; en equatoriale, les axes portent l'angle horaire et la declinaison :
+// :GA#/:GZ# renvoyaient alors ces angles d'axes (90/90 au parking GEM) au lieu de la
+// position dans le ciel, que lisent le pilote ASCOM OnStep, NINA et INDI.
+static void horizNow(double *alt, double *az) {
+  if (mountType == 0) { *alt = currAlt; *az = currAz; return; }
+  long rs, ds;
+  aa2rd(currAlt, currAz, &rs, &ds);
+  double ha = (lst() - rs / 3600.0) * 15.0 * DEG_TO_RAD;
+  double dr = (ds / 3600.0) * DEG_TO_RAD, lr = siteLat * DEG_TO_RAD;
+  double sa = sin(dr) * sin(lr) + cos(dr) * cos(lr) * cos(ha);
+  *alt = asin(constrain(sa, -1.0, 1.0)) * RAD_TO_DEG;
+  double z = atan2(-cos(dr) * sin(ha), sin(dr) * cos(lr) - cos(dr) * cos(ha) * sin(lr)) * RAD_TO_DEG;
+  if (z < 0.0) z += 360.0;
+  if (z >= 360.0) z -= 360.0;
+  *az = z;
+}
+
 static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   if(ci < 2) { out.print(F("0#")); return; }
   char c1=cmd[1], c2=cmd[2], c3 = (ci>3) ? cmd[3] : '\0';
@@ -1996,15 +2055,15 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   if(c1=='G'&&c2=='R'){ out.print(lxRA); return; }
   if(c1=='G'&&c2=='D'){ out.print(lxDEC); return; }
   if(c1=='G'&&c2=='A'){
-    int d=(int)abs(currAlt),m=(int)((abs(currAlt)-d)*60);
-    int s=(int)((abs(currAlt)-d-m/60.0)*3600)%60;
-    sprintf(buf,"%c%02d*%02d:%02d#",currAlt>=0?'+':'-',d,m,s);
+    double hAlt, hAz; horizNow(&hAlt, &hAz);
+    long t = lround(fabs(hAlt) * 3600.0);
+    sprintf(buf,"%c%02d*%02d:%02d#",hAlt>=0?'+':'-',(int)(t/3600),(int)((t/60)%60),(int)(t%60));
     out.print(buf); return;
   }
   if(c1=='G'&&(c2=='Z'||c2=='z')){
-    int d=(int)currAz,m=(int)((currAz-d)*60);
-    int s=(int)((currAz-d-m/60.0)*3600)%60;
-    sprintf(buf,"%03d*%02d:%02d#",d,m,s);
+    double hAlt, hAz; horizNow(&hAlt, &hAz);
+    long t = lround(hAz * 3600.0) % (360L*3600L);
+    sprintf(buf,"%03d*%02d:%02d#",(int)(t/3600),(int)((t/60)%60),(int)(t%60));
     out.print(buf); return;
   }
   if(c1=='G'&&c2=='U'){ sendGU(out); return; }
@@ -2038,8 +2097,11 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     }
     return;
   }
-  if(c1=='G'&&c2=='h'){ out.print(F("+89*#")); return; }
-  if(c1=='G'&&c2=='o'){ out.print(F("+00*#")); return; }
+  // Limites d'altitude, au format OnStep : :Gh# = horizon (sDD*), :Go# = zenith (DD*).
+  // Elles valaient "+89*" et "+00*" (inversees) : le pilote ASCOM OnStep refusait
+  // alors ses reglages ("Overhead Limit is invalid, use a number between 60 and 90").
+  if(c1=='G'&&c2=='h'){ sprintf(buf,"%+02d*#",(int)ALT_MIN); out.print(buf); return; }
+  if(c1=='G'&&c2=='o'){ sprintf(buf,"%02d*#",(int)ALT_MAX); out.print(buf); return; }
   if(c1=='G'&&c2=='W'){
     if (mountType == 2) out.write('G');
     else if (mountType == 1) out.write('P'); // MUST be P for KStars compatibility!
@@ -2062,7 +2124,20 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     sprintf(buf,"%02d:%02d:%02d#", h, m, s);
     out.print(buf); return;
   }
-  if(c1=='G'&&c2=='T'){ out.print(F("60.0000#")); return; }
+  // :GT# : frequence de suivi "60 Hz" comme OnStep : 60,16427 = sideral, 60,0 = solaire,
+  // 57,9 = lunaire, 0 suivi coupe. "60.0000" fixe faisait lire "suivi solaire"
+  // au pilote ASCOM OnStep (NINA affichait Tracking : Solar).
+  if(c1=='G'&&c2=='T'){
+    double f = 0.0;
+    if (tracking || slewing) {
+      f = 60.0 * 1.00273790935;
+      // Lunaire : 57,9 comme OnStep, valeur que le pilote ASCOM OnStep reconnait (a
+      // 0,001 pres). Indicatif : le suivi lunaire calcule la position de la Lune.
+      if (trackRate == 1) f = 57.9;
+      else if (trackRate == 2) f = 60.0;            // solaire
+    }
+    out.print(f, 5); out.write('#'); return;
+  }
   if(c1=='G'&&c2=='M'){
     if (mountType == 0) out.print(F("AltAz#"));
     else if (mountType == 1) out.print(F("ForkEq#"));
@@ -2072,7 +2147,9 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   if(c1=='G'&&c2=='N'){ out.print(F("Observatory#")); return; }
   if(c1=='G'&&c2=='O'){ out.print(F("Site2#")); return; }
   if(c1=='G'&&c2=='P'){ out.print(F("Site3#")); return; }
-  if(c1=='G'&&c2=='V'&&c3=='P'){ out.print(F("OnStep#")); return; }
+  // "On-Step", avec le tiret : reponse d'un vrai OnStep, exigee telle quelle par
+  // le pilote ASCOM OnStep (NINA...) et lue par le driver INDI lx200_OnStep.
+  if(c1=='G'&&c2=='V'&&c3=='P'){ out.print(F("On-Step#")); return; }
   if(c1=='G'&&c2=='V'&&c3=='N'){ out.print(F("4.24#")); return; }
   if(c1=='G'&&c2=='V'&&(c3=='D'||c3=='F')){ out.print(F("May 26 2026#")); return; }
   if(c1=='G'&&c2=='V'&&c3=='T'){ out.print(F("00:00:00#")); return; }
@@ -2200,14 +2277,22 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
       enableMotors(true);
       out.write('1'); return;
     }
-    if(c2=='g' && ci>=4){
+    // Allemande cote ouest (axe dec au-dela de 90) : l'axe de declinaison tourne a
+    // l'envers. Nord/sud (guidage :Mg/:MG et boutons :Mn/:Ms) sont inverses pour
+    // aller vers le pole celeste nord quel que soit le cote, comme OnStep : sans cela
+    // "nord" faisait descendre la declinaison apres un retournement.
+    const bool decRev = (mountType == 2 && currAlt > 90.0);
+    // :Mg<d><ms># guidage sans reponse ; :MG<d><ms># idem mais repond 1 (ou 0 si
+    // refuse), comme OnStep : c'est la forme qu'envoie le pilote ASCOM OnStep.
+    if((c2=='g'||c2=='G') && ci>=4){
+      const bool rep = (c2=='G');
       // Refuse hors suivi : l'ISR ne fait avancer le guidage que sous
       // motionOK, une impulsion armee suivi coupe n'aurait aucun effet utile
       // et PHD2/Ekos ne guident de toute facon jamais moteurs a l'arret.
-      if (alarmActive || slewing || !tracking) return;
+      if (alarmActive || slewing || !tracking) { if(rep) out.write('0'); return; }
       char dir=cmd[3]; unsigned long ms=0;
       for(uint8_t i=4;i<ci;i++) if(cmd[i]>='0'&&cmd[i]<='9') ms=ms*10+(cmd[i]-'0');
-      if(ms>5000)ms=5000; if(ms==0)return;
+      if(ms>5000)ms=5000; if(ms==0){ if(rep) out.write('1'); return; }
       enableMotors(true);
 
       long ticks  = (long)((ms * ISR_HZ) / 1000UL);
@@ -2226,20 +2311,21 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
       // doTrack(), qui coupe le suivi sous ALT_MIN.
       noInterrupts();
       switch(dir){
-        case 'n': guideAddAlt =  addAlt; guideTicksAlt = ticks; break;
-        case 's': guideAddAlt = -addAlt; guideTicksAlt = ticks; break;
+        case 'n': guideAddAlt = decRev ? -addAlt :  addAlt; guideTicksAlt = ticks; break;
+        case 's': guideAddAlt = decRev ?  addAlt : -addAlt; guideTicksAlt = ticks; break;
         case 'w': guideAddAz  =  addAz;  guideTicksAz  = ticks; break;
         case 'e': guideAddAz  = -addAz;  guideTicksAz  = ticks; break;
-        default:  interrupts(); return;
+        default:  interrupts(); if(rep) out.write('0'); return;
       }
       guiding = true;
       interrupts();
+      if(rep) out.write('1');
       return;   // non bloquant
     }
     if (alarmActive) return;
     enableMotors(true); parked=false; spiralActive=false;
     switch(c2){
-      case 'n':altMove= 1; break; case 's':altMove=-1; break;
+      case 'n':altMove= decRev ? -1 :  1; break; case 's':altMove= decRev ?  1 : -1; break;
       case 'e':azMove =-1; break; case 'w':azMove = 1; break;
     }
     return;
@@ -2268,16 +2354,22 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     saveStateToEEPROM();
     out.print(F("N/A#")); return;
   }
+  // :CS# : sync SANS reponse, comme OnStep ("Sync's fail silently"). Le pilote ASCOM
+  // OnStep synchronise par :CS# et ne lit rien : le "N/A#" renvoye restait dans son
+  // tampon et decalait les reponses suivantes. :CM# repond toujours "N/A#".
   if(c1=='C'&&c2=='S'){
-    if(!timeSet) { out.print(F("N/A#")); return; }
+    if(!timeSet) return;
     double ra_h=inRA/3600.0, dec_d=inDEC/3600.0;
     rd2aa(ra_h,dec_d,&currAlt,&currAz);
     azPos=azPosFromAz(currAz); altPos=(long)(currAlt*ALT_PPD);
     currRA=inRA; currDEC=inDEC;
     setTrk(ra_h, dec_d);
     synced=true; updatePos();
+    // Comme :CM : sans ce recalage, le suivi gardait jusqu'a 5 s sa base d'avant
+    // le sync et la monture s'ecartait de ~1,5' avant de revenir (vu avec NINA).
+    if (tracking) force_tracking_rebase = true;
     saveStateToEEPROM();
-    out.print(F("N/A#")); return;
+    return;
   }
 
   
@@ -2335,9 +2427,11 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     out.write('1'); return;
   }
   if(c1=='T'&&c2=='d'){ tracking=false; out.write('1'); return; }
-  if(c1=='T'&&c2=='Q'){ setTrackRate(0); out.write('1'); return; }
-  if(c1=='T'&&c2=='L'){ setTrackRate(1); out.write('1'); return; }
-  if(c1=='T'&&c2=='S'){ setTrackRate(2); out.write('1'); return; }
+  // Vitesses de suivi SANS reponse, comme OnStep (pilote ASCOM OnStep : un "1" en
+  // trop decalait ses lectures). INDI les envoie sans attendre de reponse.
+  if(c1=='T'&&c2=='Q'){ setTrackRate(0); return; }
+  if(c1=='T'&&c2=='L'){ setTrackRate(1); return; }
+  if(c1=='T'&&c2=='S'){ setTrackRate(2); return; }
   // Compensation (driver INDI : "Full Compensation" = :To#, "Refraction" = :Tr#,
   // "Off" = :Tn#). Ici les deux premieres reviennent au meme : la refraction est
   // corrigee au pointage et au suivi, sur les deux axes. '1' = accepte. La
@@ -2353,8 +2447,8 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   // :T1#/:T2# (suivi mono-axe / bi-axes) : rien a selectionner ici, le nombre
   // d'axes suivis decoule de la geometrie (les deux en AltAz, l'axe horaire
   // seul en fourche equatoriale). Acquitter est donc exact.
-  if(c1=='T'&&(c2=='R'||c2=='K'||c2=='+'||c2=='-'
-               ||c2=='1'||c2=='2')){ out.write('1'); return; }
+  if(c1=='T'&&(c2=='R'||c2=='K'||c2=='+'||c2=='-')){ return; }   // OnStep : rien
+  if(c1=='T'&&(c2=='1'||c2=='2')){ out.write('1'); return; }
   if(c1=='A'&&c2=='P'){
     // Suivi arrete (parking, :Td, demarrage) : on suit la ou pointe la
     // monture. trkRA/trkDec gardaient sinon l'ancienne cible (dernier objet
@@ -2569,9 +2663,9 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     saveStateToEEPROM();
     out.write('1'); return;
   }
+  // :hC# (retour au zero) et :hF# : sans reponse, comme OnStep.
   if(c1=='h'&&c2=='C'){
-    if (slewing) { out.write('0'); return; }
-    out.write('1'); 
+    if (slewing) return;
     double pAlt = homeAlt(mountType);
     double pAz = homeAz(mountType);
     long pRA, pDEC;
@@ -2582,7 +2676,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     saveStateToEEPROM();
     return;
   }
-  if(c1=='h'&&c2=='F'){ out.write('1'); return; }
+  if(c1=='h'&&c2=='F'){ return; }
 
   if(c1=='S' && (c2=='t' || c2=='g') && ci>=6){
     uint8_t i=3; int8_t sg=1;
@@ -2638,7 +2732,11 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     dt_d=(cmd[6]-'0')*10+(cmd[7]-'0');
     dt_y=2000+(cmd[9]-'0')*10+(cmd[10]-'0');
     timeSet = true;
-    out.print(F("1Updating#                              #")); return;
+    // "1" seul, comme OnStep (pilote ASCOM OnStep, driver INDI lx200_OnStep). La
+    // reponse longue du LX200 ("1Updating#...#") laissait deux "#" dans le tampon
+    // du pilote ASCOM, qui ne le vide pas : toutes les reponses suivantes etaient
+    // decalees. Les applis GotoAndrivet acceptent les deux formes.
+    out.write('1'); return;
   }
   if(c1=='S'&&c2=='X'){ out.write('1'); return; }
   if(c1=='S'&&(c2=='h'||c2=='o')){ out.write('1'); return; }
@@ -2651,16 +2749,31 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   }
 
   if(c1=='F' || c1=='f'){ out.print(F("0#")); return; }
-  if(c1=='$'||c1=='%'){
-    if(c2=='B'){
-      bool isSet=false;
-      for(uint8_t i=3;i<ci;i++){ if(cmd[i]==','){isSet=true;break;} }
-      if(isSet) out.write('1');
-      else out.print(F("0#"));
-      return;
+  // Jeu (backlash) au format OnStep, en secondes d'arc (0 a 3600), converti en pas :
+  //   :%BR# / :%BD#      lecture  -> n#
+  //   :$BRn# / :$BDn#    reglage  -> 1 (ou 0 si n hors plage)
+  // R = axe 1 (AD/azimut), D = axe 2 (dec/hauteur). Le pilote ASCOM OnStep et le
+  // driver INDI envoient :$BRn# sans virgule ; l'ancienne lecture attendait une
+  // virgule, repondait "0#" (echec) et la lecture renvoyait toujours 0.
+  // Plafond de 10000 pas : au-dela, le chargement de l'EEPROM remet le jeu a 0.
+  if((c1=='$'||c1=='%') && c2=='B' && (c3=='R'||c3=='D')){
+    double ppd = (c3=='R') ? AZ_PPD : ALT_PPD;
+    if(c1=='%'){
+      uint16_t steps = (c3=='R') ? backlashAz : backlashAlt;
+      long sec = lround((double)steps * 3600.0 / ppd);
+      if(sec > 3600) sec = 3600;
+      out.print(sec); out.write('#'); return;
     }
-    out.print(F("0#")); return;
+    if(ci < 5){ out.write('0'); return; }
+    long sec = atol(cmd+4);
+    if(sec < 0 || sec > 3600){ out.write('0'); return; }
+    long steps = lround((double)sec * ppd / 3600.0);
+    if(steps > 10000) steps = 10000;
+    if(c3=='R') backlashAz = (uint16_t)steps; else backlashAlt = (uint16_t)steps;
+    saveStateToEEPROM();
+    out.write('1'); return;
   }
+  if(c1=='$'||c1=='%'){ out.print(F("0#")); return; }
   if(c1=='B'&&(c2=='+'||c2=='-')){ return; }
   if(c1=='U'&&ci==2){ return; }
 
