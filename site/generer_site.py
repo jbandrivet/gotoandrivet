@@ -69,7 +69,8 @@ MENU = (("index.html", "Accueil"), ("telecharger.html", "Télécharger"), ("docu
 
 LIENS = (("OnStep", "https://onstep.groups.io/g/main/wiki"), ("KStars et Ekos", "https://kstars.kde.org/fr/"),
          ("Stellarium", "https://stellarium.org/fr/"), ("Astrometry.net", "https://astrometry.net/"),
-         ("PHD2 Guiding", "https://openphdguiding.org/"), ("INDI", "https://indilib.org/"))
+         ("PHD2 Guiding", "https://openphdguiding.org/"), ("INDI", "https://indilib.org/"),
+         ("N.I.N.A.", "https://nighttime-imaging.eu/"), ("ASCOM", "https://ascom-standards.org/"))
 BADGES = (("LINUX", "inside", "#000", "#ffcc00"), ("WINDOWS", "aussi !", "#0078d7", "#fff"),
           ("PYTHON", "powered", "#306998", "#ffd43b"),
           ("GPL v3", "libre !", "#a00", "#fff"), ("ARDUINO", "&amp; Teensy", "#00979d", "#fff"))
@@ -106,7 +107,8 @@ FONCTIONS = (
      "focuseur intégré ou ZWO EAF."),
     ("⊞", "Linux et Windows", "Paquet .deb ou installateur sous Linux, trois .exe sans installation sous Windows. "
      "Même monture, mêmes firmwares, mise à jour d'un clic sur les deux."),
-    ("▣", "Deux firmwares", "Arduino Mega 2560 ou Teensy 4.1, protocole LX200/OnStep compatible avec KStars, Ekos et INDI."),
+    ("▣", "Deux firmwares", "Arduino Mega 2560 ou Teensy 4.1, protocole LX200/OnStep compatible avec KStars, Ekos et INDI "
+     "sous Linux, NINA et ASCOM sous Windows, PHD2 sur les deux."),
     ("☰", "Raquette physique", "Teensy 4.1 et écran 20 × 4 : catalogues, GoTo, parking, suivi, sans ordinateur."),
     ("⚙", "Configurateur", "Rapports d'engrenage, micro-pas, vitesses, type de monture, et flashage des cartes "
      "sans l'IDE Arduino."),
