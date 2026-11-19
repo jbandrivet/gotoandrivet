@@ -1929,7 +1929,10 @@ TRANSLATIONS = {
         "btn_save": "Save…",
         
         # Settings Dialog Strings
-        "settings_title": "Parameters — GotoMega",
+        "settings_title": "Parameters — GotoAndrivet",
+        "log_time_sent": "Date and time sent to the mount",
+        "log_site_sent": "Site sent to the mount (lat {lat:.4f}, lon {lon:.4f})",
+        "log_lst_offset": "Mount sidereal time off by {off:+.0f} min",
         "tab_site": " Site ",
         "tab_mech": " Mechanics ",
         "tab_conn": " Connection ",
@@ -2148,7 +2151,10 @@ TRANSLATIONS = {
         "btn_save": "Sauvegarder…",
         
         # Settings Dialog Strings
-        "settings_title": "Paramètres — GotoMega",
+        "settings_title": "Paramètres — GotoAndrivet",
+        "log_time_sent": "Date et heure envoyées à la monture",
+        "log_site_sent": "Lieu envoyé à la monture (lat. {lat:.4f}, long. {lon:.4f})",
+        "log_lst_offset": "Heure sidérale de la monture décalée de {off:+.0f} min",
         "tab_site": " Site ",
         "tab_mech": " Mécanique ",
         "tab_conn": " Connexion ",
@@ -2762,20 +2768,21 @@ class App(tk.Tk):
             self.cfg.set("mount_port", "auto" if auto else port)
             self.cfg.set("mount_port_last", port); self.cfg.save()
         # v5.1 : envoyer automatiquement la date/heure courante après connexion
-        # pour que le Mega lève son flag 'F' (time-not-set) et autorise les goto.
+        # pour que la monture (Mega ou Teensy) lève son drapeau « heure non réglée » et autorise les GoTo.
         if ok and not sim:
             try:
                 self.mount.set_datetime_now()
-                self._logw("Date/heure envoyée au Mega","tx")
+                t = TRANSLATIONS[self.cfg.get("language", "fr")]
+                self._logw(t["log_time_sent"],"tx")
                 
                 # Envoyer aussi la position GPS configurée au démarrage
                 lat = self.cfg.get("latitude", 45.764)
                 lon = self.cfg.get("longitude", 4.836)
                 self.mount.set_location(lat, lon)
-                self._logw(f"GPS envoyé au Mega (Lat:{lat:.4f}, Lon:{lon:.4f})","tx")
+                self._logw(t["log_site_sent"].format(lat=lat, lon=lon),"tx")
                 off = self.mount.lst_offset_min(lon)
                 if off is not None and abs(off) > 2:
-                    self._logw(f"Heure sidérale de la monture décalée de {off:+.0f} min","err")
+                    self._logw(t["log_lst_offset"].format(off=off),"err")
                     self.after(0, lambda o=off: messagebox.showwarning(
                         "GotoAndrivet", TRANSLATIONS[self.cfg.get("language", "fr")]["msg_lst_offset"].format(off=o)))
             except Exception as e:

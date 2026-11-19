@@ -2211,7 +2211,8 @@ static void sendGU(Print& out) {
   if(!slewing)  out.write('N');
   out.write(parked?'P':'p');
   if(atHome)    out.write('H');
-  if(synced)    out.write('S');
+  // Pas de 'S' pour "synchronise" : chez OnStep, 'S' = signal PPS/GPS recu, et
+  // Ekos affichait "PPS / GPS Sync Ok". L'etat synchronise reste lu par :GW#.
   if(guiding)   out.write('G');
 
   // Type de monture, convention du driver : E = GEM, K = fourche, A = AltAz.
