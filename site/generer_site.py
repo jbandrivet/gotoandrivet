@@ -575,7 +575,12 @@ MATERIEL = (
      "12 V par jack, protégée par un fusible et une diode, fins de course, voyant, mesure du 12 V et prise I2C. "
      "Le module caméra mesure l'erreur de mise en station et fait tourner les vis jusqu'au pôle (onglet "
      "« Mise en station » de la fenêtre Caméra).",
-     (), ""),
+     ("base", "couvercle"),
+     "Boîtier de 118 x 119,5 x 42,5 mm. Côté borniers, une chambre de câblage de 22 mm et quatre trous de "
+     "12,5 mm pour des presse-étoupes PG7 ou M12 x 1,5 (câble de 3 à 6,5 mm) : deux moteurs et deux câbles de "
+     "fins de course ; un cinquième trou, fermé par une fine peau, se perce pour un câble I2C. Le jack 12 V et "
+     "l'USB du Nano se branchent de l'extérieur. Couvercle aéré au-dessus des drivers, avec un trou pour voir "
+     "le voyant. Quatre pattes à lumière fixent le boîtier sur la monture (vis M5 ou M4)."),
 )
 
 # Schéma de branchement, affiché sous les fichiers de la carte concernée
@@ -700,7 +705,7 @@ def page_materiel(depot, sortie, version):
 <h1>Cartes et boîtiers</h1>
 <p>GotoAndrivet a ses propres cartes électroniques : une pour la monture, en deux versions selon les drivers
 des moteurs, une pour la raquette, et une pour la mise en station robotisée. Ce sont des circuits à deux
-couches, à faire fabriquer ; celles de la monture et de la raquette ont leur boîtier à imprimer en 3D.</p>
+couches, à faire fabriquer, et chacune a son boîtier à imprimer en 3D.</p>
 <ul>
 <li><strong>Faire fabriquer une carte</strong> : envoyez le fichier « Gerber et perçages » tel quel au
 fabricant (JLCPCB, PCBWay, Aisler...), en épaisseur 1,6 mm.</li>

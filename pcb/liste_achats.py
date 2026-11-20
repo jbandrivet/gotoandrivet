@@ -72,7 +72,10 @@ EN_PLUS["mise_en_station"] = [
      "Contact entre MIN ou MAX et GND : arrête le moteur en bout de course de la vis"),
     ("Bloc d'alimentation 12 V, 2 A, jack 5,5 x 2,1 mm (centre +)", 1, "Moteurs ; le Nano est alimenté aussi par l'USB"),
     ("Câble USB mini-B (ou USB-C selon le Nano)", 1, "Nano vers le PC"),
-    ("Entretoise M3 x 10 mm et vis M3 x 6", 4, "Fixation de la carte"),
+    ("Presse-étoupe PG7 ou M12 x 1,5 (câble de 3 à 6,5 mm)", "4 (5 avec l'I2C)",
+     "2 moteurs, 2 câbles de fins de course ; le 5e trou, fermé par une fine peau, se perce pour l'I2C"),
+] + BOITIER_MONTURE + [
+    ("Vis M5 (ou M4) et rondelles", 4, "Boîtier sur la monture, par ses 4 pattes"),
 ]
 
 IMPRESSION = {
@@ -80,6 +83,7 @@ IMPRESSION = {
     "monture": "boitier_monture_base.stl et boitier_monture_couvercle.stl",
     "raquette": "boitier_raquette_base.stl, boitier_raquette_face_avant.stl et boitier_raquette_boutons.stl "
                 "(les 5 boutons)",
+    "mise_en_station": "boitier_mise_en_station_base.stl et boitier_mise_en_station_couvercle.stl",
 }
 
 COMMUN = [
