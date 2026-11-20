@@ -21,6 +21,10 @@ CARTES = (
     ("raquette", "Raquette",
      "Télécommande à écran LCD 20 x 4. Facultative : la monture se pilote aussi depuis le PC. "
      "Boîtier de 113 x 158 x 39 mm."),
+    ("mise_en_station", "Mise en station robotisée",
+     "Facultative, pour les montures équatoriales : deux moteurs tournent les vis de réglage en azimut "
+     "et en hauteur, commandés par le PC (onglet Mise en station du module Caméra). Carte de 110 x 85 mm, "
+     "reliée au PC par l'USB de son Arduino Nano, moteurs en 12 V."),
 )
 
 TEENSY = [
@@ -57,6 +61,19 @@ EN_PLUS = {
         ("Presse-étoupe PG7 ou M12 x 1,5 (câble de 3 à 6,5 mm)", 1, "Câble vers la monture"),
     ],
 }
+
+EN_PLUS["mise_en_station"] = [
+    ("Barrette femelle 1 x 15, pas 2,54 mm", 2, "Support de l'Arduino Nano (A1) : il s'enfiche, il n'est pas soudé"),
+    ("Module driver StepStick TMC2209 (ou A4988, DRV8825)", 2,
+     "Sur DRV_AZ et DRV_ALT ; pour un A4988 ou un DRV8825, fermer le pont RS sous le module"),
+    ("Moteur pas à pas NEMA 14 ou 17, avec réducteur si la vis est dure", 2,
+     "Un par vis de réglage (azimut, hauteur), relié à la vis par un accouplement ou une courroie"),
+    ("Micro-rupteur de fin de course", "0 à 4 (facultatif)",
+     "Contact entre MIN ou MAX et GND : arrête le moteur en bout de course de la vis"),
+    ("Bloc d'alimentation 12 V, 2 A, jack 5,5 x 2,1 mm (centre +)", 1, "Moteurs ; le Nano est alimenté aussi par l'USB"),
+    ("Câble USB mini-B (ou USB-C selon le Nano)", 1, "Nano vers le PC"),
+    ("Entretoise M3 x 10 mm et vis M3 x 6", 4, "Fixation de la carte"),
+]
 
 IMPRESSION = {
     "monture_ext": "boitier_monture_ext_base.stl et boitier_monture_ext_couvercle.stl",
@@ -95,7 +112,7 @@ def composants(carte):
 def ecrire():
     md = ["# Liste d'achat", "",
           "Tout ce qu'il faut acheter pour construire une monture GotoAndrivet : une carte monture (drivers "
-          "externes **ou** StepStick) et, si vous la voulez, la raquette. Pour chaque carte : les composants "
+          "externes **ou** StepStick) et, si vous les voulez, la raquette et la carte de mise en station robotisée. Pour chaque carte : les composants "
           "à souder dessus, puis les modules, la visserie et les presse-étoupes à prévoir en plus.", "",
           "Les composants soudés sont repris des listes de fabrication (`pcb/fabrication/*_composants.csv`) "
           "par `pcb/liste_achats.py` ; les repères sont ceux de la sérigraphie des cartes.", ""]
@@ -106,8 +123,9 @@ def ecrire():
         md += tableau(lignes, ("Désignation", "Qté", "Repères")) + [""]
         md += ["### À prévoir en plus", ""]
         md += tableau(EN_PLUS[carte], ("Désignation", "Qté", "Pour")) + [""]
-        md += [f"Boîtier à imprimer en 3D (PETG conseillé dehors) : {IMPRESSION[carte]}, "
-               f"dans `pcb/{carte}/`.", ""]
+        if carte in IMPRESSION:
+            md += [f"Boîtier à imprimer en 3D (PETG conseillé dehors) : {IMPRESSION[carte]}, "
+                   f"dans `pcb/{carte}/`.", ""]
     md += ["## Câbles, alimentation et moteurs", ""]
     md += tableau(COMMUN, ("Désignation", "Qté", "Pour")) + [""]
     md += ["## Où acheter", "",

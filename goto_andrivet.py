@@ -3411,6 +3411,37 @@ class App(tk.Tk):
                                          "tx" if resp.startswith("0") else "err"))
         return resp
 
+    def photo_tracking(self):
+        """Suivi sidéral en marche (mise en station : rotation de l'AD entre deux images)."""
+        return bool(self.mount.state.tracking)
+
+    def photo_rotate_ra(self, deg, abort=None):
+        """Tourne l'axe d'AD seul d'environ deg degrés (> 0 vers l'Ouest) par :Mw/:Me à la vitesse
+        choisie, puis :Qw/:Qe. Pas de GoTo : le modèle de pointage ferait aussi bouger l'axe de déclinaison,
+        et la mise en station veut des images prises sur un seul cercle autour de l'axe d'AD.
+        L'angle parcouru est lu sur la position de la monture (moins la rotation du ciel si elle suit)."""
+        st = self.mount.state
+        lon = self.cfg.get("longitude", 4.836)
+        sens = "w" if deg > 0 else "e"
+        ra0, t0 = st.ra_h, datetime.now(timezone.utc)
+        lst0 = Astro.lst(t0, lon)
+        self.mount._cmd(f":M{sens}", reply=False)
+        self.after(0, lambda: self._logw(f":M{sens}  mise en station : rotation de l'AD de {abs(deg):.0f}°", "tx"))
+        try:
+            debut = time.time()
+            while time.time() - debut < max(60.0, abs(deg) / 0.3):
+                if abort is not None and abort.is_set():
+                    break
+                time.sleep(0.25)
+                d_ra = ((self.mount.state.ra_h - ra0) * 15 + 180) % 360 - 180
+                d_lst = ((Astro.lst(datetime.now(timezone.utc), lon) - lst0) * 15 + 180) % 360 - 180
+                fait = -d_ra + (0.0 if self.mount.state.tracking else d_lst)
+                if abs(fait) >= abs(deg):
+                    break
+        finally:
+            self.mount._cmd(f":Q{sens}", reply=False)
+        time.sleep(2.0)            # arrêt et vibrations
+
     def photo_camera_name(self):
         w = self._photo_win
         return w.camera.name if w and w.camera else None

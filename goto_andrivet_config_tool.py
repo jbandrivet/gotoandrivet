@@ -2733,7 +2733,7 @@ finally:
     def open_flash_dialog(self):
         flash_top = tk.Toplevel(self)
         flash_top.title("Mise à jour du Firmware")
-        flash_top.geometry("400x320")
+        flash_top.geometry("400x370")
         flash_top.configure(bg="#c0c0c0")
         flash_top.resizable(False, False)
         
@@ -2791,6 +2791,18 @@ finally:
         btn_t = tk.Button(btn_frame, text="Teensy 4.1 (Raquette)", font=("Arial", 11), command=choose_teensy_raquette)
         btn_t.pack(side="top", pady=5, fill="x", padx=40)
 
+        def choose_mise_en_station():
+            selected_port = port_combo.get()
+            if not selected_port:
+                messagebox.showerror("Erreur", "Veuillez sélectionner un port.")
+                return
+            flash_top.destroy()
+            self.flash_firmware("mise_en_station", selected_port)
+
+        btn_mes = tk.Button(btn_frame, text="Arduino Nano (Mise en station)", font=("Arial", 11),
+                            command=choose_mise_en_station)
+        btn_mes.pack(side="top", pady=5, fill="x", padx=40)
+
     def flash_firmware(self, target, flash_port):
         cli = self.find_arduino_cli()
         lang = self.settings.get("language", "fr")
@@ -2809,6 +2821,12 @@ finally:
         if target == "mega_monture":
             sketch_path = script_dir / "mega_monture"
             fqbn = "arduino:avr:mega"
+            additional_args = []
+        elif target == "mise_en_station":
+            # Carte pcb/mise_en_station : Arduino Nano (ATmega328P). Les clones gardent souvent l'ancien
+            # chargeur de démarrage (57600 bauds) : essayé si le téléversement normal échoue.
+            sketch_path = script_dir / "mise_en_station"
+            fqbn = "arduino:avr:nano"
             additional_args = []
         elif target == "teensy_monture":
             sketch_path = script_dir / "teensy_monture"
@@ -2847,6 +2865,9 @@ finally:
                 if res_pull.returncode != 0:
                     print("Git pull failed: " + res_pull.stderr)
                     
+                if target == "mise_en_station":     # cœur AVR (Nano), installé s'il manque
+                    subprocess.run([cli, "core", "install", "arduino:avr"], capture_output=True, text=True, timeout=300)
+
                 # 1. Compile
                 compile_cmd = [cli, "compile", "--fqbn", fqbn] + additional_args + [str(sketch_path)]
                 res_comp = subprocess.run(compile_cmd, capture_output=True, text=True, timeout=120)
@@ -2857,6 +2878,10 @@ finally:
                 # 2. Upload
                 upload_cmd = [cli, "upload", "-p", flash_port, "--fqbn", fqbn] + additional_args + [str(sketch_path)]
                 res_upl = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=90)
+                if res_upl.returncode != 0 and target == "mise_en_station":
+                    old = [cli, "compile", "--upload", "-p", flash_port, "--fqbn", "arduino:avr:nano:cpu=atmega328old",
+                           str(sketch_path)]
+                    res_upl = subprocess.run(old, capture_output=True, text=True, timeout=180)
                 if res_upl.returncode != 0:
                     self.after(0, lambda err=res_upl.stderr, out=res_upl.stdout: messagebox.showerror(t["flashing_title"], t["flashing_error"] + err + "\n\n" + out))
                     return

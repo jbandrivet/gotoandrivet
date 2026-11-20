@@ -199,7 +199,10 @@ except Exception as e:
             return
             
         n = n / norm
-        is_south = float(self.cfg.get("latitude", 45.0)) < 0
+        try:
+            is_south = float(self.app.lat_entry.get().replace(",", ".")) < 0
+        except (AttributeError, ValueError):
+            is_south = False
         if is_south and n[2] > 0: n = -n
         elif not is_south and n[2] < 0: n = -n
         

@@ -39,7 +39,7 @@ def install(status):
         status("Copie des fichiers dans le dossier personnel...", 5)
         for f in src.glob("*.py"):
             shutil.copy2(f, INSTALL_DIR)
-        for d in ["mega_monture", "teensy_monture", "teensy_raquette", "icons"]:
+        for d in ["mega_monture", "teensy_monture", "teensy_raquette", "mise_en_station", "icons"]:
             if (src / d).exists():
                 shutil.copytree(src / d, INSTALL_DIR / d, dirs_exist_ok=True)
         if mise_a_jour.is_git(src):

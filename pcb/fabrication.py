@@ -2,7 +2,7 @@
 """
 Fichiers de fabrication des trois cartes, à relancer après chaque modification d'un PCB routé.
 
-Pour chaque carte (monture, monture_ext, raquette), écrit dans pcb/fabrication/ :
+Pour chaque carte (monture, monture_ext, raquette, mise_en_station), écrit dans pcb/fabrication/ :
 - <carte>_gerber.zip      : Gerber et perçages, à envoyer tel quel au fabricant (JLCPCB, PCBWay...)
 - <carte>_composants.csv  : liste des composants, regroupés par valeur et empreinte
 - <carte>_jlc_bom.csv et <carte>_jlc_cpl.csv : nomenclature et positions pour le montage par JLCPCB
@@ -27,7 +27,7 @@ import pcbnew
 
 ICI = Path(__file__).resolve().parent
 SORTIE = ICI / "fabrication"
-CARTES = ("monture", "monture_ext", "raquette")
+CARTES = ("monture", "monture_ext", "raquette", "mise_en_station")
 COUCHES = "F.Cu,B.Cu,F.Mask,B.Mask,F.Silkscreen,B.Silkscreen,Edge.Cuts"
 DATE_ZIP = (2026, 1, 1, 0, 0, 0)     # date fixe : le zip ne change que si les Gerber changent
 
@@ -48,10 +48,22 @@ DESIGNATIONS = {
     "TO-92_Inline_Wide": "Transistor NPN PN2222A (TO-92, brochage E B C)",
     "D_DO-35_SOD27_P2.54mm_Vertical_AnodeUp": "Diode 1N4148",
     "SOT-23_Handsoldering": "MOSFET canal N BSS138 (SOT-23)",
+    "TerminalBlock_Phoenix_PT-1,5-3-3.5-H_1x03_P3.50mm_Horizontal": "Bornier à vis 3 points, pas 3,5 mm",
+    "Arduino_Nano": "Arduino Nano (ATmega328P, 5 V) : enfiché sur 2 barrettes femelles 1 x 15",
+    "LED_D3.0mm": "LED verte 3 mm",
+    "D_DO-201AD_P12.70mm_Horizontal": "Diode Schottky 1N5822 (40 V, 3 A, DO-201AD)",
 }
 
 
+def calibre(valeur):
+    """« T4A (TR5) » -> « 4 » : calibre d'un fusible d'après sa valeur sur la carte."""
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*A", valeur)
+    return m.group(1) if m else valeur
+
+
 def designation_achat(empreinte, valeur):
+    if empreinte.startswith("Fuse_Littelfuse_372"):     # valeur « T4A », « T2A » : calibre du fusible
+        return f"Fusible TR5 temporisé {calibre(valeur)} A (Littelfuse 372) et son support"
     if empreinte.startswith("R_Axial"):
         return f"Résistance {valeur[:-1] + ' kOhm' if valeur.endswith('k') else valeur + ' Ohm'}, 1/4 W"
     return DESIGNATIONS.get(empreinte, valeur)
@@ -98,7 +110,7 @@ def composants(pcb, nom):
 # Montage par JLCPCB (option PCB Assembly) : nomenclature et positions à leur format. Les descriptions
 # sont en anglais, pour que JLC trouve les pièces chez LCSC (« Parts Selection : By JLCPCB »). Le Teensy
 # n'est pas chez LCSC : il s'enfiche sur ses barrettes, à souder soi-même ; les fils du câble aussi.
-JLC_SAUF = ("Teensy41", "SolderWire-0.5sqmm_1x04_P4.8mm_D0.9mm_OD2.3mm")
+JLC_SAUF = ("Teensy41", "Arduino_Nano", "SolderWire-0.5sqmm_1x04_P4.8mm_D0.9mm_OD2.3mm")
 JLC_PIECES = {
     "TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal":
         "Screw terminal block 2P, pitch 5.08 mm (Phoenix MKDS 1,5/2-5,08 or equivalent)",
@@ -113,6 +125,9 @@ JLC_PIECES = {
     "Buzzer_12x9.5RM7.6": "Buzzer 12 mm, 5 V, pin pitch 7.6 mm",
     "Fuse_Littelfuse_372_D8.50mm": "TR5 fuse 4 A time-lag (Littelfuse 372)",
     "R_Array_SIP5": "Resistor network 4 x 10k bussed, SIP-5, common pin 1",
+    "TerminalBlock_Phoenix_PT-1,5-3-3.5-H_1x03_P3.50mm_Horizontal":
+        "Screw terminal block 3P, pitch 3.5 mm (Phoenix PT 1,5/3-3,5-H or equivalent)",
+    "LED_D3.0mm": "LED 3 mm green, THT",
 }
 JLC_TYPES = (("CP_Radial", "Electrolytic capacitor {v}"), ("C_Disc", "Ceramic capacitor {v} 50 V"),
              ("R_Axial", "Resistor {v} ohm 1/4 W axial"), ("L_Radial", "Radial power inductor {v}"),
@@ -122,6 +137,8 @@ JLC_TYPES = (("CP_Radial", "Electrolytic capacitor {v}"), ("C_Disc", "Ceramic ca
 
 
 def jlc_piece(empreinte, valeur):
+    if empreinte.startswith("Fuse_Littelfuse_372"):
+        return f"TR5 fuse {calibre(valeur)} A time-lag (Littelfuse 372)"
     if empreinte in JLC_PIECES:
         return JLC_PIECES[empreinte]
     for debut, modele in JLC_TYPES:

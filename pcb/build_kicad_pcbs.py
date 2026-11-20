@@ -891,6 +891,225 @@ def create_raquette_pcb(output_dir):
     print(f"[OK] PCB Raquette créé : {pcb_path}")
 
 
+# =============================================================================
+# CARTE MISE EN STATION ROBOTISÉE (carte à part, reliée au PC par l'USB de son Nano)
+# =============================================================================
+# Deux moteurs pas à pas tournent les vis de réglage de la monture : azimut (vis gauche/droite)
+# et hauteur (vis de latitude). Le logiciel du PC mesure l'erreur de mise en station avec la caméra
+# (méthode à 3 images), puis commande ces moteurs jusqu'à ce qu'elle passe sous la tolérance.
+#
+# Arduino Nano (ATmega328P, 5 V) : D2/D3/D4 = STEP/DIR/EN azimut, D5/D6/D7 = STEP/DIR/EN hauteur,
+# D8/D9 = fins de course azimut MIN/MAX, D10/D11 = hauteur MIN/MAX, D12 = voyant ACTIF,
+# A0 = mesure du 12 V moteurs (pont 47k/10k), A4/A5 = I2C (extension : inclinomètre...).
+# Entrée 12 V (jack) -> fusible T2A -> diode Schottky 1N5822 (inversion) -> VM : drivers et VIN du Nano.
+# Sans le 12 V, le Nano reste alimenté par l'USB et refuse de bouger (VM mesuré trop bas).
+MES_AXES = (("AZ", "AZIMUT", 24.0), ("ALT", "HAUTEUR", 60.0))
+MES_NANO_XY = (67.5, 74.0)      # pastille 1 (D1) ; rotation 90 : prise USB sur le bord droit
+MES_POWER_NETCLASS = {"name": "Puissance", "clearance": 0.25, "track_width": 1.0, "via_diameter": 1.2,
+                      "via_drill": 0.6, "priority": 0}
+MES_POWER_NET_PATTERNS = ["VM", "VIN_F", "JACK_IN", "GND", "*_1A", "*_1B", "*_2A", "*_2B"]
+# Broches du Nano (numéros de pastille de Module:Arduino_Nano, comme le symbole Arduino_Nano_v3.x)
+MES_NANO_PADS = {"GND": (4, 29), "AZ_STEP": 5, "AZ_DIR": 6, "AZ_EN": 7, "ALT_STEP": 8, "ALT_DIR": 9,
+                 "ALT_EN": 10, "FC_AZ_MIN": 11, "FC_AZ_MAX": 12, "FC_ALT_MIN": 13, "FC_ALT_MAX": 14,
+                 "LED_ACT": 15, "VM_SENSE": 19, "SDA": 23, "SCL": 24, "+5V": 27, "VM": 30}
+
+
+def _fp(board, lib, name, ref, value, xy, rot=0, ref_xy=None, ref_angle=0, hide_ref=False):
+    fp = pcbnew.FootprintLoad(lib, name)
+    fp.SetReference(ref)
+    fp.SetValue(value)
+    fp.SetOrientationDegrees(rot)
+    fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(xy[0]), pcbnew.FromMM(xy[1])))
+    board.Add(fp)
+    if hide_ref:
+        fp.Reference().SetVisible(False)
+    elif ref_xy:
+        place_field(fp.Reference(), *ref_xy, angle=ref_angle)
+    fp.Value().SetVisible(False)
+    return fp
+
+
+def create_mise_en_station_pcb(output_dir):
+    """Carte de mise en station robotisée : Arduino Nano + 2 supports StepStick (TMC2209, A4988, DRV8825)."""
+    os.makedirs(output_dir, exist_ok=True)
+    names = ["GND", "+5V", "JACK_IN", "VIN_F", "VM", "VM_SENSE", "LED_ACT", "LED_K", "SDA", "SCL",
+             "FC_AZ_MIN", "FC_AZ_MAX", "FC_ALT_MIN", "FC_ALT_MAX"]
+    for ax, _, _ in MES_AXES:
+        names += [f"{ax}_{s}" for s in ("STEP", "DIR", "EN", "MS1", "MS2", "RST", "SLP", "1A", "1B", "2A", "2B")]
+    board, nets = _new_board(names)
+
+    W, H = 110, 85
+    add_outline_and_holes(board, W, H)
+    add_label(board, "GOTO-ANDRIVET  MISE EN STATION", 83.5, 79.6, size_mm=1.1)
+    add_label(board, "NANO - 2 x STEPSTICK - 12V", 83.5, 81.9)
+
+    # ---------------------------------------------------------------- moteurs et drivers
+    for ax, nom, cx in MES_AXES:
+        term = _fp(board, LIB_TERMINAL, "TerminalBlock_Phoenix_MKDS-1,5-4-5.08_1x04_P5.08mm_Horizontal",
+                   f"M_{ax}", f"MOTEUR {ax}", (cx + 7.62, 8), rot=180, ref_xy=(cx, 11.81))
+        for k, net in enumerate(("2B", "2A", "1A", "1B"), 1):
+            connect_pad(term, k, nets[f"{ax}_{net}"])
+        for k, name in enumerate(("1B", "1A", "2A", "2B")):
+            add_label(board, name, cx - 7.62 + 5.08 * k, 14.3)
+        add_label(board, f"MOTEUR {nom}", cx, 16.4)
+
+        drv_y = 28.0
+        xl, xr = cx - 6.35, cx + 6.35
+        sl = _fp(board, LIB_SOCKET, "PinSocket_1x08_P2.54mm_Vertical", f"DRV_{ax}_L", "Logique", (xl, drv_y),
+                 hide_ref=True)
+        sr = _fp(board, LIB_SOCKET, "PinSocket_1x08_P2.54mm_Vertical", f"DRV_{ax}_R", "Puissance", (xr, drv_y),
+                 hide_ref=True)
+        # Gauche (haut -> bas) : EN MS1 MS2 MS3/PDN RST SLP STEP DIR ; droite : VM GND 2B 2A 1A 1B VDD GND
+        for k, net in ((1, "EN"), (2, "MS1"), (3, "MS2"), (5, "RST"), (6, "SLP"), (7, "STEP"), (8, "DIR")):
+            connect_pad(sl, k, nets[f"{ax}_{net}"])
+        for k, net in enumerate(("VM", "GND", f"{ax}_2B", f"{ax}_2A", f"{ax}_1A", f"{ax}_1B", "+5V", "GND"), 1):
+            connect_pad(sr, k, nets[net])
+        # GND du haut : coincé entre VM et 2B, le plan de masse n'y loge pas ses branches thermiques
+        # (erreur starved_thermal) : liaison pleine au plan.
+        for pad in sr.Pads():
+            if pad.GetNumber() == "2":
+                pad.SetLocalZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
+
+        # Ponts à souder sous le module : MS1 et MS2 vers le 5 V (pas du moteur), RST relié à SLP
+        # (indispensable pour A4988 / DRV8825, à laisser OUVERT pour un TMC2209).
+        for row, local, other, label in ((2, f"{ax}_MS1", "+5V", "MS1"), (3, f"{ax}_MS2", "+5V", "MS2"),
+                                         (5, f"{ax}_RST", f"{ax}_SLP", "RS")):
+            y = drv_y + 2.54 * (row - 1)
+            jp = _fp(board, LIB_JUMPER, "SolderJumper-2_P1.3mm_Open_RoundedPad1.0x1.5mm", f"JP_{ax}_{label}",
+                     label, (xl + SPI_JUMPER_DX, y), hide_ref=True)
+            connect_pad(jp, 1, nets[local])
+            connect_pad(jp, 2, nets[other])
+            add_track(board, xl, y, xl + SPI_JUMPER_DX - 0.65, y, 0.25, pcbnew.F_Cu, nets[local])
+            add_label(board, label, xl + SPI_JUMPER_DX + 3.6, y, justify=LEFT, width_mm=0.8)
+
+        add_rect_silk(board, cx - 8.1, drv_y - 1.7, cx + 8.1, drv_y + 19.5, width_mm=0.2)
+        add_label(board, f"DRIVER {ax}", cx + 4.0, drv_y + 14.0, angle=90)
+        add_label(board, "EN", cx - 9.5, drv_y)
+        add_label(board, "VM", cx + 9.5, drv_y)
+        add_label(board, f"DRV_{ax}", cx, drv_y + 21.0)
+
+        cap = _fp(board, LIB_CAP, "CP_Radial_D8.0mm_P3.50mm", f"C_{ax}", "100uF 35V", (cx - 1.75, 21.6),
+                  ref_xy=(cx + 7.6, 21.6))
+        connect_pad(cap, 1, nets["VM"])
+        connect_pad(cap, 2, nets["GND"])
+
+        # Rappel du EN au 5 V : moteur libre tant que le Nano n'a pas démarré
+        ren = _fp(board, LIB_RES, R_VERTICAL, f"R_EN_{ax}", "10k", (cx + 11.6, 34.0), rot=90,
+                  ref_xy=(cx + 13.5, 32.73), ref_angle=90)
+        connect_pad(ren, 1, nets[f"{ax}_EN"])
+        connect_pad(ren, 2, nets["+5V"])
+
+    # Légende des ponts (entre les deux modules)
+    for k, line in enumerate(("PONTS SOUS LE MODULE", "MS1/MS2 : pas", "RS : A4988, DRV8825",
+                              "TMC2209 : RS ouvert")):
+        add_label(board, line, 42.0, 38.2 + 1.8 * k)
+
+    # ---------------------------------------------------------------- fins de course
+    rn = _fp(board, LIB_RES, "R_Array_SIP5", "RN_FC", "10k x4 (commun broche 1)", (80.0, 19.0),
+             ref_xy=(96.0, 19.0))
+    connect_pad(rn, 1, nets["+5V"])
+    fcs = ("FC_AZ_MIN", "FC_AZ_MAX", "FC_ALT_MIN", "FC_ALT_MAX")
+    for k, net in enumerate(fcs):
+        connect_pad(rn, 2 + k, nets[net])
+        c = _fp(board, LIB_CAP, "C_Disc_D3.0mm_W1.6mm_P2.50mm", f"C_FC{k + 1}", "100nF", (79.0 + 5.0 * k, 24.5),
+                hide_ref=True)
+        connect_pad(c, 1, nets[net])
+        connect_pad(c, 2, nets["GND"])
+    add_label(board, "FILTRES FC", 87.0, 27.6)
+    for ref, (a, b), x0, nom in (("J_FC_AZ", ("FC_AZ_MIN", "FC_AZ_MAX"), 87.0, "FC AZ"),
+                                 ("J_FC_ALT", ("FC_ALT_MIN", "FC_ALT_MAX"), 99.0, "FC ALT")):
+        j = _fp(board, LIB_TERMINAL, "TerminalBlock_Phoenix_PT-1,5-3-3.5-H_1x03_P3.50mm_Horizontal", ref, nom,
+                (x0, 8), rot=180, ref_xy=(x0 - 3.5, 10.2))
+        connect_pad(j, 1, nets["GND"])
+        connect_pad(j, 2, nets[b])
+        connect_pad(j, 3, nets[a])
+        for k, name in enumerate(("GND", "MAX", "MIN")):
+            add_label(board, name, x0 - 3.5 * k, 14.3, width_mm=0.8)
+        add_label(board, nom, x0 - 3.5, 16.4)
+
+    # ---------------------------------------------------------------- I2C (extension)
+    i2c = _fp(board, LIB_HEADER, "PinHeader_1x04_P2.54mm_Vertical", "J_I2C", "I2C", (106.0, 33.0),
+              ref_xy=(106.0, 30.6))
+    for k, net in enumerate(("GND", "+5V", "SDA", "SCL"), 1):
+        connect_pad(i2c, k, nets[net])
+    add_pin_labels(board, 98.6, 33.0, ("GND", "5V", "SDA", "SCL"))
+    add_label(board, "I2C", 106.0, 42.9)
+
+    # ---------------------------------------------------------------- Arduino Nano
+    nano = _fp(board, "/usr/share/kicad/footprints/Module.pretty", "Arduino_Nano", "A1", "Arduino Nano",
+               MES_NANO_XY, rot=90, ref_xy=(MES_NANO_XY[0] + 17.8, MES_NANO_XY[1] - 7.6))
+    for net, pads in MES_NANO_PADS.items():
+        for p in (pads if isinstance(pads, tuple) else (pads,)):
+            connect_pad(nano, p, nets[net])
+
+    # Mesure du 12 V moteurs : 47k / 10k -> A0 (12 V -> 2,1 V ; 5 V atteints à 28 V)
+    for ref, val, xy, a, b in (("R_VS1", "47k", (84.0, 52.0), "VM", "VM_SENSE"),
+                               ("R_VS2", "10k", (87.5, 52.0), "VM_SENSE", "GND")):
+        r = _fp(board, LIB_RES, R_VERTICAL, ref, val, xy, rot=90, ref_xy=(xy[0] - 1.9, xy[1] - 1.27),
+                ref_angle=90)
+        connect_pad(r, 1, nets[a])
+        connect_pad(r, 2, nets[b])
+    cvs = _fp(board, LIB_CAP, "C_Disc_D3.0mm_W1.6mm_P2.50mm", "C_VS", "100nF", (91.0, 50.0), rot=270,
+              ref_xy=(91.0, 46.9))
+    connect_pad(cvs, 1, nets["VM_SENSE"])
+    connect_pad(cvs, 2, nets["GND"])
+    add_label(board, "MESURE 12V", 87.5, 54.9)
+
+    # Voyant ACTIF (D12) : allumé pendant un mouvement, clignote si le 12 V manque
+    led = _fp(board, "/usr/share/kicad/footprints/LED_THT.pretty", "LED_D3.0mm", "D_ACT", "LED verte 3 mm",
+              (98.5, 50.5), ref_xy=(99.8, 46.9))
+    connect_pad(led, 1, nets["LED_K"])     # cathode
+    connect_pad(led, 2, nets["LED_ACT"])   # anode
+    rl = _fp(board, LIB_RES, R_VERTICAL, "R_LED", "1k", (95.0, 52.0), rot=90, ref_xy=(93.1, 50.73),
+             ref_angle=90)
+    connect_pad(rl, 1, nets["LED_K"])
+    connect_pad(rl, 2, nets["GND"])
+    add_label(board, "ACTIF", 99.8, 54.9)
+
+    # ---------------------------------------------------------------- alimentation 12 V
+    jack = _fp(board, LIB_JACK, "BarrelJack_Horizontal", "J_12V", "12V Jack", (14.04, 66.0),
+               ref_xy=(7.0, 58.6))
+    connect_pad(jack, 1, nets["JACK_IN"])
+    connect_pad(jack, 2, nets["GND"])
+    connect_pad(jack, 3, nets["GND"])
+    add_label(board, "<- 12V (centre +)", 3.0, 73.8, justify=LEFT)
+    fuse = _fp(board, LIB_FUSE, "Fuse_Littelfuse_372_D8.50mm", "F_IN", "T2A", (22.0, 79.0),
+               ref_xy=(24.54, 73.6))
+    connect_pad(fuse, 1, nets["JACK_IN"])
+    connect_pad(fuse, 2, nets["VIN_F"])
+    dio = _fp(board, LIB_DIODE, "D_DO-201AD_P12.70mm_Horizontal", "D_IN", "1N5822", (44.7, 79.0), rot=180,
+              ref_xy=(38.35, 75.2))
+    connect_pad(dio, 1, nets["VM"])        # cathode (bague) côté VM
+    connect_pad(dio, 2, nets["VIN_F"])
+    add_label(board, "1N5822", 38.35, 82.8)
+    cin = _fp(board, LIB_CAP, "CP_Radial_D10.0mm_P5.00mm", "C_IN", "470uF 35V", (51.0, 77.5),
+              ref_xy=(53.5, 71.0))
+    connect_pad(cin, 1, nets["VM"])
+    connect_pad(cin, 2, nets["GND"])
+
+    add_guide(board, ("BRANCHEMENT :", "USB du Nano -> PC", "12V moteurs : jack",
+                      "Fins de course : contact -> GND"), x1=4.0, x2=36.0, y1=50.0)
+
+    board.BuildConnectivity()
+    pcb_path = os.path.join(output_dir, "mise_en_station.kicad_pcb")
+    pcbnew.SaveBoard(pcb_path, board)
+    with open(os.path.join(output_dir, "mise_en_station.kicad_pro"), "w") as f:
+        json.dump({"meta": {"filename": "mise_en_station.kicad_pro", "version": 1},
+                   "boards": ["mise_en_station.kicad_pcb"], "sheets": [],
+                   "net_settings": {"meta": {"version": 4},
+                                    "classes": [DEFAULT_NETCLASS, MES_POWER_NETCLASS],
+                                    "netclass_patterns": [{"netclass": "Puissance", "pattern": p}
+                                                          for p in MES_POWER_NET_PATTERNS]}},
+                  f, indent=2)
+    print(f"[OK] PCB Mise en station créé : {pcb_path}")
+
+
+if __name__ == "__main__" and len(__import__("sys").argv) == 3 and __import__("sys").argv[1] == "mise_en_station":
+    # Ne génère que cette carte, dans le dossier demandé (sans toucher aux cartes routées)
+    create_mise_en_station_pcb(__import__("sys").argv[2])
+    raise SystemExit(0)
+
+
 if __name__ == "__main__":
     local_dir = "/home/jean-baptiste/GotoAndrivet_PCB"
     usb_dir = "/run/media/jean-baptiste/6E91-2E1D/perso/astronomie/gotos/goto_andrivet/pcb"

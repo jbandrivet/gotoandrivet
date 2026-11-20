@@ -1,13 +1,13 @@
 name: Firmwares
 
-# Compile les trois firmwares (monture Mega, monture Teensy, raquette Teensy) et les publie avec leurs
+# Compile les quatre firmwares (monture Mega, monture Teensy, raquette Teensy, mise en station Nano) et les publie avec leurs
 # sources dans la version « firmwares », derrière des liens stables :
 #   https://github.com/jbandrivet/gotoandrivet/releases/download/firmwares/<fichier>
 # Le configurateur compile et flashe lui-même les cartes ; ces fichiers servent si on ne peut pas l'utiliser.
 on:
   push:
     branches: [ main ]
-    paths: [ mega_monture/**, teensy_monture/**, teensy_raquette/**, .github/workflows/firmwares.yml ]
+    paths: [ mega_monture/**, teensy_monture/**, teensy_raquette/**, mise_en_station/**, .github/workflows/firmwares.yml ]
   workflow_dispatch:
 
 permissions:
@@ -32,7 +32,7 @@ jobs:
     - name: Compilation
       run: |
         mkdir -p dist
-        for c in "arduino:avr:mega mega_monture" "teensy:avr:teensy41 teensy_monture" "teensy:avr:teensy41 teensy_raquette"; do
+        for c in "arduino:avr:mega mega_monture" "teensy:avr:teensy41 teensy_monture" "teensy:avr:teensy41 teensy_raquette" "arduino:avr:nano mise_en_station"; do
           set -- $c
           arduino-cli compile --fqbn "$1" --output-dir "build/$2" "$2"
           cp "build/$2/$2.ino.hex" "dist/$2.hex"
@@ -55,8 +55,10 @@ jobs:
           | Monture, Arduino Mega 2560 | `mega_monture.hex` | `mega_monture-source.zip` |
           | Monture, Teensy 4.1 | `teensy_monture.hex` | `teensy_monture-source.zip` |
           | Raquette, Teensy 4.1 | `teensy_raquette.hex` | `teensy_raquette-source.zip` |
+          | Mise en station, Arduino Nano | `mise_en_station.hex` | `mise_en_station-source.zip` |
 
           - **Arduino Mega** : `avrdude -p atmega2560 -c wiring -P /dev/ttyACM0 -b 115200 -D -U flash:w:mega_monture.hex:i`
+          - **Arduino Nano** : `avrdude -p atmega328p -c arduino -P /dev/ttyUSB0 -b 115200 -D -U flash:w:mise_en_station.hex:i` (`-b 57600` pour un clone à l'ancien chargeur de démarrage)
           - **Teensy** : avec Teensy Loader (https://www.pjrc.com/teensy/loader.html), « File → Open HEX File », puis bouton de la carte.
           - Sources : bibliothèques TinyGPSPlus et LiquidCrystal I2C à installer dans l'IDE Arduino.
 

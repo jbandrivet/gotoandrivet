@@ -1,6 +1,6 @@
 # Liste d'achat
 
-Tout ce qu'il faut acheter pour construire une monture GotoAndrivet : une carte monture (drivers externes **ou** StepStick) et, si vous la voulez, la raquette. Pour chaque carte : les composants à souder dessus, puis les modules, la visserie et les presse-étoupes à prévoir en plus.
+Tout ce qu'il faut acheter pour construire une monture GotoAndrivet : une carte monture (drivers externes **ou** StepStick) et, si vous les voulez, la raquette et la carte de mise en station robotisée. Pour chaque carte : les composants à souder dessus, puis les modules, la visserie et les presse-étoupes à prévoir en plus.
 
 Les composants soudés sont repris des listes de fabrication (`pcb/fabrication/*_composants.csv`) par `pcb/liste_achats.py` ; les repères sont ceux de la sérigraphie des cartes.
 
@@ -122,6 +122,43 @@ Télécommande à écran LCD 20 x 4. Facultative : la monture se pilote aussi de
 | Presse-étoupe PG7 ou M12 x 1,5 (câble de 3 à 6,5 mm) | 1 | Câble vers la monture |
 
 Boîtier à imprimer en 3D (PETG conseillé dehors) : boitier_raquette_base.stl, boitier_raquette_face_avant.stl et boitier_raquette_boutons.stl (les 5 boutons), dans `pcb/raquette/`.
+
+## Mise en station robotisée
+
+Facultative, pour les montures équatoriales : deux moteurs tournent les vis de réglage en azimut et en hauteur, commandés par le PC (onglet Mise en station du module Caméra). Carte de 110 x 85 mm, reliée au PC par l'USB de son Arduino Nano, moteurs en 12 V.
+
+### Composants à souder sur la carte (28 pièces)
+
+| Désignation | Qté | Repères |
+|---|---|---|
+| 100nF | 5 | C_FC1 C_FC2 C_FC3 C_FC4 C_VS |
+| 100uF 35V | 2 | C_ALT C_AZ |
+| 470uF 35V | 1 | C_IN |
+| Arduino Nano (ATmega328P, 5 V) : enfiché sur 2 barrettes femelles 1 x 15 | 1 | A1 |
+| Barrette femelle 1 x 8, pas 2,54 mm (support StepStick) | 4 | DRV_ALT_L DRV_ALT_R DRV_AZ_L DRV_AZ_R |
+| Barrette mâle 1 x 4, pas 2,54 mm | 1 | J_I2C |
+| Bornier à vis 3 points, pas 3,5 mm | 2 | J_FC_ALT J_FC_AZ |
+| Bornier à vis 4 points, pas 5,08 mm | 2 | M_ALT M_AZ |
+| Diode Schottky 1N5822 (40 V, 3 A, DO-201AD) | 1 | D_IN |
+| Fusible TR5 temporisé 2 A (Littelfuse 372) et son support | 1 | F_IN |
+| Jack d'alimentation 12 V | 1 | J_12V |
+| LED verte 3 mm | 1 | D_ACT |
+| Réseau de résistances 4 x 10 kOhm, commun broche 1 (SIP5) | 1 | RN_FC |
+| Résistance 1 kOhm, 1/4 W | 1 | R_LED |
+| Résistance 10 kOhm, 1/4 W | 3 | R_EN_ALT R_EN_AZ R_VS2 |
+| Résistance 47 kOhm, 1/4 W | 1 | R_VS1 |
+
+### À prévoir en plus
+
+| Désignation | Qté | Pour |
+|---|---|---|
+| Barrette femelle 1 x 15, pas 2,54 mm | 2 | Support de l'Arduino Nano (A1) : il s'enfiche, il n'est pas soudé |
+| Module driver StepStick TMC2209 (ou A4988, DRV8825) | 2 | Sur DRV_AZ et DRV_ALT ; pour un A4988 ou un DRV8825, fermer le pont RS sous le module |
+| Moteur pas à pas NEMA 14 ou 17, avec réducteur si la vis est dure | 2 | Un par vis de réglage (azimut, hauteur), relié à la vis par un accouplement ou une courroie |
+| Micro-rupteur de fin de course | 0 à 4 (facultatif) | Contact entre MIN ou MAX et GND : arrête le moteur en bout de course de la vis |
+| Bloc d'alimentation 12 V, 2 A, jack 5,5 x 2,1 mm (centre +) | 1 | Moteurs ; le Nano est alimenté aussi par l'USB |
+| Câble USB mini-B (ou USB-C selon le Nano) | 1 | Nano vers le PC |
+| Entretoise M3 x 10 mm et vis M3 x 6 | 4 | Fixation de la carte |
 
 ## Câbles, alimentation et moteurs
 

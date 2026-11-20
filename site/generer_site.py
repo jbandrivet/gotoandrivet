@@ -42,7 +42,7 @@ EXE_WINDOWS = (("GotoAndrivet_Carte_du_ciel.exe", "Carte du ciel et GoTo"),
                ("GotoAndrivet_Configurateur.exe", "Configurateur de la monture"),
                ("GotoAndrivet_Raquette.exe", "Raquette virtuelle"))
 CARTES = (("mega_monture", "Monture, Arduino Mega 2560"), ("teensy_monture", "Monture, Teensy 4.1"),
-          ("teensy_raquette", "Raquette, Teensy 4.1"))
+          ("teensy_raquette", "Raquette, Teensy 4.1"), ("mise_en_station", "Mise en station, Arduino Nano"))
 # Fichiers copiés sur le site depuis les publications GitHub : nom -> adresse
 FICHIERS = {"GotoAndrivet.deb": f"{RELEASE}/GotoAndrivet.deb",
             "Install_Goto_Universal": f"{RELEASE}/Install_Goto_Universal"}
@@ -516,6 +516,8 @@ voici les firmwares prêts à flasher, et leurs sources pour l'IDE Arduino.</p>
 </table></div>
 <ul>
 <li><strong>Arduino Mega</strong> : <code>avrdude -p atmega2560 -c wiring -P /dev/ttyACM0 -b 115200 -D -U flash:w:mega_monture.hex:i</code></li>
+<li><strong>Arduino Nano</strong> : <code>avrdude -p atmega328p -c arduino -P /dev/ttyUSB0 -b 115200 -D -U flash:w:mise_en_station.hex:i</code>
+(<code>-b 57600</code> pour un clone à l'ancien chargeur de démarrage)</li>
 <li><strong>Teensy</strong> : avec <a href="https://www.pjrc.com/teensy/loader.html">Teensy Loader</a>,
 « File → Open HEX File », puis appui sur le bouton de la carte.</li>
 <li><strong>Sources</strong> : installez les bibliothèques TinyGPSPlus et LiquidCrystal I2C dans l'IDE Arduino.</li>
@@ -567,6 +569,13 @@ MATERIEL = (
      "l'écran est câblé à l'intérieur. Les cinq boutons "
      "s'impriment tête en bas, sans support ; ils sont calés pour des poussoirs 6 x 6 mm de 4,3 mm de haut "
      "(pour d'autres poussoirs, changez leur hauteur dans le script FreeCAD et relancez-le)."),
+    ("mise_en_station", "Carte de mise en station robotisée",
+     "110 x 85 mm, deux couches, à part de la monture. Un Arduino Nano branché en USB sur le PC et deux supports "
+     "StepStick (TMC2209 conseillé, A4988 ou DRV8825) pour les moteurs des vis d'azimut et de hauteur. Entrée "
+     "12 V par jack, protégée par un fusible et une diode, fins de course, voyant, mesure du 12 V et prise I2C. "
+     "Le module caméra mesure l'erreur de mise en station et fait tourner les vis jusqu'au pôle (onglet "
+     "« Mise en station » de la fenêtre Caméra).",
+     (), ""),
 )
 
 # Schéma de branchement, affiché sous les fichiers de la carte concernée
@@ -663,6 +672,15 @@ def page_materiel(depot, sortie, version):
             *(fichier(rep / f"{boitier}_{p}.stl", f"{p.replace('_', ' ').capitalize()} (.stl)") for p in pieces),
             fichier(rep / f"{boitier}.scad", "Source OpenSCAD (.scad)"),
             fichier(rep / f"boutons_{carte}.py", "Source FreeCAD des boutons (.py)")]))
+        partie_boitier = f"""<h3>Boîtier à imprimer</h3>
+<div class="vues">
+{vue(rep / f"{boitier}_3d.png", "Le boîtier ouvert")}
+{vue(rep / f"{boitier}_boutons_3d.png", "Les boutons sur leurs poussoirs")}
+</div>
+<p>{html.escape(texte_boitier)}</p>
+<ul class="fichiers">
+{fichiers_boitier}
+</ul>""" if pieces else ""
         sections.append(f"""<section class="panneau">
 <h2>{html.escape(titre)}</h2>
 <p>{html.escape(texte)}</p>
@@ -676,21 +694,13 @@ def page_materiel(depot, sortie, version):
 </ul>
 {composants(carte)}
 {CABLAGE.get(carte, "")}
-<h3>Boîtier à imprimer</h3>
-<div class="vues">
-{vue(rep / f"{boitier}_3d.png", "Le boîtier ouvert")}
-{vue(rep / f"{boitier}_boutons_3d.png", "Les boutons sur leurs poussoirs")}
-</div>
-<p>{html.escape(texte_boitier)}</p>
-<ul class="fichiers">
-{fichiers_boitier}
-</ul>
+{partie_boitier}
 </section>""")
     contenu = f"""<section class="panneau">
 <h1>Cartes et boîtiers</h1>
 <p>GotoAndrivet a ses propres cartes électroniques : une pour la monture, en deux versions selon les drivers
-des moteurs, et une pour la raquette. Ce sont des circuits à deux couches, à faire fabriquer, et chacune a son
-boîtier à imprimer en 3D.</p>
+des moteurs, une pour la raquette, et une pour la mise en station robotisée. Ce sont des circuits à deux
+couches, à faire fabriquer ; celles de la monture et de la raquette ont leur boîtier à imprimer en 3D.</p>
 <ul>
 <li><strong>Faire fabriquer une carte</strong> : envoyez le fichier « Gerber et perçages » tel quel au
 fabricant (JLCPCB, PCBWay, Aisler...), en épaisseur 1,6 mm.</li>

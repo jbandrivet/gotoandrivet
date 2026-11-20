@@ -434,6 +434,22 @@ TEXTS = {
         "error": "Erreur : {e}", "stopped": "Arrêté.", "temp": "Capteur : {t}",
         "sim_offset": "Caméra simulée : erreur de pointage simulée de {d:.0f}′.",
         "goto_refused": "GoTo refusé par la monture : {r}",
+
+        "tab_polar": " Mise en station ",
+        "pa_board": "Carte de mise en station (moteurs des vis)", "pa_noboard": "Pas de carte : réglage des vis à la main.",
+        "pa_board_st": "{v} · 12 V : {vm} · azimut {pa:+d} pas · hauteur {pl:+d} pas{fc}",
+        "pa_fc": " · fin de course : {l}", "pa_vm_off": "absent",
+        "pa_measure": "Mesure", "pa_angle": "Rotation d'AD (°) :", "pa_tol": "Tolérance (′) :",
+        "pa_refr": "Viser le pôle relevé par la réfraction",
+        "pa_axis": "1. Mesurer l'axe (3 images)", "pa_refresh": "Mesurer l'erreur",
+        "pa_auto": "2. Correction automatique", "pa_calib": "Recalibrer",
+        "pa_manual": "Moteurs à la main", "pa_steps": "Pas :", "pa_calib_st": "Calibration : {a} pas/′ azimut, {l} pas/′ hauteur",
+        "pa_calib_none": "Moteurs pas encore calibrés (fait au début de la correction automatique).",
+        "pa_note": "Visez vers le méridien, entre 30° et 70° de hauteur. Seul l'axe d'AD tourne entre les images.",
+        "pa_need_eq": "La mise en station concerne les montures équatoriales (réglage Type de monture).",
+        "pa_turn": "Monture non connectée : tournez l'axe d'AD d'environ {d:.0f}° à la main, puis cliquez OK.",
+        "pa_need_axis": "Mesurez d'abord l'axe (3 images).", "pa_need_board": "Connectez d'abord la carte de mise en station.",
+        "pa_done": "Erreur de mise en station : {e:.1f}′",
     },
     "en": {
         "title": "GotoAndrivet — Camera", "camera": "Camera", "connect": "Connect", "disconnect": "Disconnect",
@@ -472,6 +488,22 @@ TEXTS = {
         "error": "Error: {e}", "stopped": "Stopped.", "temp": "Sensor: {t}",
         "sim_offset": "Simulated camera: simulated pointing error of {d:.0f}′.",
         "goto_refused": "GoTo refused by the mount: {r}",
+
+        "tab_polar": " Polar align ",
+        "pa_board": "Polar alignment board (screw motors)", "pa_noboard": "No board: turn the screws by hand.",
+        "pa_board_st": "{v} · 12 V: {vm} · azimuth {pa:+d} steps · altitude {pl:+d} steps{fc}",
+        "pa_fc": " · limit switch: {l}", "pa_vm_off": "missing",
+        "pa_measure": "Measure", "pa_angle": "RA rotation (°):", "pa_tol": "Tolerance (′):",
+        "pa_refr": "Aim at the refraction-raised pole",
+        "pa_axis": "1. Measure the axis (3 frames)", "pa_refresh": "Measure the error",
+        "pa_auto": "2. Automatic correction", "pa_calib": "Recalibrate",
+        "pa_manual": "Motors by hand", "pa_steps": "Steps:", "pa_calib_st": "Calibration: {a} steps/′ azimuth, {l} steps/′ altitude",
+        "pa_calib_none": "Motors not calibrated yet (done at the start of the automatic correction).",
+        "pa_note": "Aim toward the meridian, 30° to 70° high. Only the RA axis turns between the frames.",
+        "pa_need_eq": "Polar alignment is for equatorial mounts (Mount type setting).",
+        "pa_turn": "Mount not connected: turn the RA axis by about {d:.0f}° by hand, then click OK.",
+        "pa_need_axis": "Measure the axis first (3 frames).", "pa_need_board": "Connect the polar alignment board first.",
+        "pa_done": "Polar alignment error: {e:.1f}′",
     },
 }
 
@@ -541,7 +573,7 @@ class PhotoWindow(tk.Toplevel):
 
     def _build(self):
         c, t = self.c, self.t
-        left = tk.Frame(self, bg=c["BG2"], width=370); left.pack(side=tk.LEFT, fill=tk.Y); left.pack_propagate(False)
+        left = tk.Frame(self, bg=c["BG2"], width=445); left.pack(side=tk.LEFT, fill=tk.Y); left.pack_propagate(False)
         right = tk.Frame(self, bg=c["BG"]); right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Caméra et optique, toujours visibles
@@ -569,9 +601,10 @@ class PhotoWindow(tk.Toplevel):
 
         nb = self.nb = ttk.Notebook(left); nb.pack(fill=tk.BOTH, expand=True, padx=2, pady=4)
         tabs = []
-        for key in ("tab_capture", "tab_astro", "tab_model"):
+        for key in ("tab_capture", "tab_astro", "tab_model", "tab_polar"):
             tab = tk.Frame(nb, bg=c["BG2"]); nb.add(tab, text=t[key]); tabs.append(tab)
-        cap, ast, mod = tabs
+        cap, ast, mod, pol = tabs
+        self._build_polar(pol)
 
         # Onglet Prise de vue
         f = self._frame(cap, t["capture"])
@@ -1009,6 +1042,209 @@ class PhotoWindow(tk.Toplevel):
         else:
             self.l_model.configure(text=self.t["model_empty"])
 
+    # ── Mise en station (mise_en_station_robot.py, carte pcb/mise_en_station) ──
+    def _build_polar(self, pol):
+        c, t = self.c, self.t
+        self.pa_card = None; self.pa = None
+        f = self._frame(pol, t["pa_board"])
+        r = self._row(f)
+        self.v_pa_port = tk.StringVar(value=self.cfg.get("pa_port", ""))
+        self.cb_pa_port = ttk.Combobox(r, textvariable=self.v_pa_port, width=21, font=c["FS"])
+        self.cb_pa_port.pack(side=tk.LEFT, padx=2)
+        ttk.Button(r, text="↺", width=3, command=self._pa_ports).pack(side=tk.LEFT, padx=2)
+        self.b_pa_conn = ttk.Button(r, text=t["connect"], command=self._pa_toggle); self.b_pa_conn.pack(side=tk.LEFT, padx=2)
+        self.l_pa_board = self._note(f, t["pa_noboard"])
+        self.l_pa_calib = self._note(f)
+        r = self._row(f); self._lbl(r, t["pa_steps"], 6)
+        self.v_pa_jog = tk.IntVar(value=int(self.cfg.get("pa_jog", 200)))
+        self._spin(r, self.v_pa_jog, 1, 100000, 50, 6)
+        for lbl, axe, sgn in (("Az −", "A", -1), ("Az +", "A", 1), ("Haut −" if self.cfg.get("language", "fr") == "fr"
+                              else "Alt −", "L", -1), ("Haut +" if self.cfg.get("language", "fr") == "fr" else "Alt +", "L", 1)):
+            ttk.Button(r, text=lbl, width=6, command=lambda a=axe, s=sgn: self._pa_jog(a, s)).pack(side=tk.LEFT, padx=1)
+
+        f = self._frame(pol, t["pa_measure"])
+        r = self._row(f); self._lbl(r, t["pa_angle"], 17)
+        self.v_pa_angle = tk.DoubleVar(value=float(self.cfg.get("pa_angle", 30.0)))
+        self._spin(r, self.v_pa_angle, -60, 60, 5, 5)
+        self._lbl(r, t["pa_tol"], 13)
+        self.v_pa_tol = tk.DoubleVar(value=float(self.cfg.get("pa_tolerance", 1.0)))
+        self._spin(r, self.v_pa_tol, 0.2, 30, 0.1, 4)
+        self.v_pa_refr = tk.BooleanVar(value=self.cfg.get("pa_refraction", False))
+        tk.Checkbutton(f, text=t["pa_refr"], variable=self.v_pa_refr, bg=c["BG2"], fg=c["TXT"], selectcolor=c["BG3"],
+                       activebackground=c["BG2"], font=c["FS"], wraplength=320, justify="left", anchor="w").pack(fill=tk.X)
+        r = self._row(f)
+        ttk.Button(r, text=t["pa_axis"], command=self._pa_axis).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        ttk.Button(r, text=t["pa_refresh"], command=self._pa_refresh).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        r = self._row(f)
+        ttk.Button(r, text=t["pa_auto"], style="GoTo.TButton", command=self._pa_auto).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        ttk.Button(r, text=t["pa_calib"], command=self._pa_recalib).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+        self.l_pa_err = tk.Label(f, text="—", bg=c["BG2"], fg=c["GRN"], font=("Helvetica", 16, "bold"))
+        self.l_pa_err.pack(fill=tk.X, pady=2)
+        self.l_pa_hint = self._note(f, fg=c["TXT"])
+        self._note(f, t["pa_note"])
+
+        self.lb_pa = tk.Listbox(pol, height=8, bg=c["BG3"], fg=c["TXT"], font=c["FS"], highlightthickness=0,
+                                relief="flat", activestyle="none", selectbackground=c["BG3"])
+        self.lb_pa.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
+        self._pa_ports(); self._pa_calib_text()
+
+    def _pa_log(self, txt):
+        def f():
+            self.lb_pa.insert(tk.END, txt); self.lb_pa.see(tk.END); self._status(txt)
+        self._ui(f)
+
+    def _pa_ports(self):
+        import mise_en_station_robot as mes
+        ports = mes.CarteMES.ports()
+        self.cb_pa_port.configure(values=ports)
+        if not self.v_pa_port.get() and ports: self.v_pa_port.set(ports[-1])
+
+    def _pa_toggle(self):
+        import mise_en_station_robot as mes
+        if self.pa_card:
+            self.pa_card.fermer(); self.pa_card = None
+            if self.pa: self.pa.carte = None
+            self.b_pa_conn.configure(text=self.t["connect"]); self.l_pa_board.configure(text=self.t["pa_noboard"])
+            return
+        port = self.v_pa_port.get()
+        self.b_pa_conn.configure(state="disabled")
+
+        def ouvrir():
+            try:
+                card = mes.CarteMES(port)
+            except Exception as e:
+                self._ui(lambda err=e: (self.b_pa_conn.configure(state="normal"),
+                                        messagebox.showerror(self.t["title"], self.t["error"].format(e=err), parent=self)))
+                return
+            def ok():
+                self.pa_card = card; self.cfg.set("pa_port", port)
+                if self.pa: self.pa.carte = card
+                self.b_pa_conn.configure(state="normal", text=self.t["disconnect"]); self._pa_board_text()
+            self._ui(ok)
+        threading.Thread(target=ouvrir, daemon=True).start()
+
+    def _pa_board_text(self):
+        card = self.pa_card
+        if not card:
+            return
+        try:
+            e = card.etat()
+            noms = ("az MIN", "az MAX", "haut MIN", "haut MAX")
+            fc = ", ".join(n for n, on in zip(noms, e["fc"]) if on)
+            vm = f"{e['vm']:.1f} V".replace(".", ",") if e["vm"] >= 5 else self.t["pa_vm_off"]
+            txt = self.t["pa_board_st"].format(v=f"{card.port} v{card.version}", vm=vm, pa=card.position("A"),
+                                               pl=card.position("L"), fc=self.t["pa_fc"].format(l=fc) if fc else "")
+        except Exception as ex:
+            txt = self.t["error"].format(e=ex)
+        self.l_pa_board.configure(text=txt)
+
+    def _pa_calib_text(self):
+        M = self.pa.M if self.pa is not None and self.pa.M is not None else self.cfg.get("pa_calibration")
+        if M is None:
+            self.l_pa_calib.configure(text=self.t["pa_calib_none"]); return
+        M = np.array(M, dtype=float)
+        f = lambda col: f"{1 / math.hypot(*M[:, col]):.0f}" if math.hypot(*M[:, col]) > 0 else "—"
+        self.l_pa_calib.configure(text=self.t["pa_calib_st"].format(a=f(0), l=f(1)))
+
+    def _pa_show(self, e):
+        import mise_en_station_robot as mes
+        fr = self.cfg.get("language", "fr") == "fr"
+        col = self.c["GRN"] if e["total"] <= float(self.cfg.get("pa_tolerance", 1.0)) else self.c["ACC"]
+        txt = self.t["pa_done"].format(e=e["total"])
+        self._ui(lambda: (self.l_pa_err.configure(text=txt.replace(".", ",") if fr else txt, fg=col),
+                          self.l_pa_hint.configure(text=mes.sens_en_mots(e, fr)), self._pa_calib_text(),
+                          self._pa_board_text()))
+
+    def _pa_engine(self):
+        """Déroulement de la mise en station, gardé entre deux boutons (l'axe mesuré reste connu)."""
+        import mise_en_station_robot as mes
+        lat, lon = float(self.cfg.get("latitude", 45.764)), float(self.cfg.get("longitude", 4.836))
+        if self.pa is None or (self.pa.lat, self.pa.lon) != (lat, lon):
+            self.pa = mes.MiseEnStation(lat, lon, self._pa_measure, self._pa_turn, self.pa_card,
+                                        suivi=self.app.photo_tracking, journal=self._pa_log, abort=self.abort,
+                                        calibration=self.cfg.get("pa_calibration"))
+        self.pa.carte = self.pa_card
+        self.pa.refraction = self.p["pa_refr"]
+        return self.pa
+
+    def _pa_measure(self):
+        """Pose + astrométrie : (AD, Déc J2000, instant du milieu de pose). Un second essai si l'image n'est pas résolue."""
+        from datetime import timedelta
+        for essai in (1, 2):
+            t = datetime.now(timezone.utc) + timedelta(seconds=self.p["exp"] / 2)
+            try:
+                sol = self._solve_frame()
+            except RuntimeError as e:
+                if essai == 2 or self.abort.is_set(): raise
+                self._pa_log(self.t["error"].format(e=e)); continue
+            return None if sol is None else (sol["ra_h"], sol["dec_d"], t)
+
+    def _pa_turn(self, deg):
+        if self.app.photo_pointing():
+            self.app.photo_rotate_ra(deg, self.abort)
+        else:
+            self.app._ui_call(lambda: messagebox.showinfo(self.t["title"], self.t["pa_turn"].format(d=abs(deg)), parent=self))
+            time.sleep(0.5)
+
+    def _pa_start(self, work, need_axis=False, need_board=False):
+        if self.cfg.get("mount_type", "AltAz") == "AltAz":
+            messagebox.showwarning(self.t["title"], self.t["pa_need_eq"], parent=self); return
+        if not self._checks(mount=False): return
+        if need_axis and (self.pa is None or self.pa.axe is None):
+            messagebox.showwarning(self.t["title"], self.t["pa_need_axis"], parent=self); return
+        if need_board and not self.pa_card:
+            messagebox.showwarning(self.t["title"], self.t["pa_need_board"], parent=self); return
+        try:
+            extra = {"pa_angle": float(self.v_pa_angle.get()), "pa_tol": float(self.v_pa_tol.get()),
+                     "pa_refr": bool(self.v_pa_refr.get())}
+        except (tk.TclError, ValueError) as e:
+            self._status(self.t["error"].format(e=e)); return
+        for k, v in (("pa_angle", "pa_angle"), ("pa_tolerance", "pa_tol"), ("pa_refraction", "pa_refr")):
+            self.cfg.set(k, extra[v])
+
+        def job():
+            import mise_en_station_robot as mes
+            self.p.update(extra)
+            m = self._pa_engine()
+            try:
+                e = work(m)
+                if e is not None: self._pa_show(e)
+            except mes.Arret:
+                self._pa_log(self.t["stopped"])
+            except Exception as ex:
+                if self.pa_card:
+                    try: self.pa_card.stop()
+                    except Exception: pass
+                self._pa_log(self.t["error"].format(e=ex))
+            finally:
+                if m.M is not None: self.cfg.set("pa_calibration", m.M.tolist())
+                self._ui(self._pa_calib_text)
+        self._run(job)
+
+    def _pa_axis(self):
+        self._pa_start(lambda m: m.mesurer_axe(self.p["pa_angle"]))
+
+    def _pa_refresh(self):
+        self._pa_start(lambda m: m.mesurer_erreur()[1], need_axis=True)
+
+    def _pa_auto(self):
+        self._pa_start(lambda m: m.corriger(self.p["pa_tol"]), need_axis=True, need_board=True)
+
+    def _pa_recalib(self):
+        def work(m):
+            m.calibrer(); return m.erreur()
+        self._pa_start(work, need_axis=True, need_board=True)
+
+    def _pa_jog(self, axe, sens):
+        if not self.pa_card:
+            messagebox.showwarning(self.t["title"], self.t["pa_need_board"], parent=self); return
+        try:
+            n = int(self.v_pa_jog.get()); self.cfg.set("pa_jog", n)
+            self.pa_card.bouger(axe, sens * n)
+        except Exception as e:
+            self._status(self.t["error"].format(e=e))
+        self.after(500, self._pa_board_text)
+
     # ── Affichage ────────────────────────────────────────────
     def _show(self):
         if self.image is None:
@@ -1037,6 +1273,8 @@ class PhotoWindow(tk.Toplevel):
             t = self.camera.temperature()
             self.l_temp.configure(text="" if t is None else self.t["temp"].format(t=f"{t:.1f} °C"))
         self.l_focuser.configure(text="" if self.app.focuser.connected else self.t["focuser_off"])
+        if self.pa_card and not self.busy:
+            self._pa_board_text()
         self.after(2000, self._tick)
 
     def close(self):
@@ -1046,5 +1284,9 @@ class PhotoWindow(tk.Toplevel):
             self.update(); time.sleep(0.05)
         if self.camera:
             self.camera.close(); self.camera = None
+        if self.pa_card:
+            try: self.pa_card.stop()
+            except Exception: pass
+            self.pa_card.fermer(); self.pa_card = None
         self.app.photo_set_fov(None)
         self.destroy()

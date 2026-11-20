@@ -270,3 +270,18 @@ Sans PCB, câblez vous-même le Mega ou le Teensy en suivant le plan de câblage
 - Réglages : le *Microstepping* de l'outil de configuration doit être égal au nombre de pas par tour réglé sur le driver divisé par 200 (par exemple 128 pour 25 600 pas/tour). Toutes les valeurs sont acceptées, puissances de 2 ou non. AZ et ALT partagent ce réglage : réglez leurs deux drivers pareil.
 - Vitesse de GoTo : le DM542 accepte 200 kHz au plus, avec des impulsions d'au moins 2,5 µs. Restez sous environ 150 kHz, soit une vitesse maximale d'environ 150 000 divisé par le nombre de pas par degré (environ 2,8°/s à 25 600 pas/tour avec une réduction de 750:1).
 - Cette carte n'a pas de bus SPI : dans l'outil de configuration, l'état TMC5160 des axes est « absent », ce qui est normal. On peut décocher « Drivers TMC5160 ».
+
+## Mise en station robotisée (`pcb/mise_en_station/`, `mise_en_station/`)
+
+Carte facultative, à part, pour les montures équatoriales (`ForkEq`, `GermanEq`) : deux moteurs pas à pas tournent les vis de réglage de la monture, l'une en azimut, l'autre en hauteur. La caméra mesure l'erreur au pôle, et le PC fait tourner les vis jusqu'à ce qu'elle passe sous la tolérance.
+
+- **Carte** (110 x 85 mm, 2 couches, dessinée par `pcb/build_kicad_pcbs.py`, puis routée avec Freerouting par le MCP KiCad) : un **Arduino Nano** branché en USB sur le PC, 2 supports StepStick (**TMC2209** conseillé, A4988 ou DRV8825 possibles), une entrée **12 V** par jack (fusible T2A, diode 1N5822 contre l'inversion), 2 borniers moteurs, 2 borniers de fins de course (MIN, MAX, GND ; contact vers GND), une prise I2C pour plus tard, un voyant ACTIF et la mesure du 12 V.
+  - Ponts à souder sous chaque module : `MS1` et `MS2` vers le 5 V (micro-pas) ; `RS` relie RESET à SLEEP, **à fermer pour un A4988 ou un DRV8825, à laisser ouvert pour un TMC2209**.
+  - Sans le 12 V, le Nano reste alimenté par l'USB mais refuse de bouger les moteurs (le voyant clignote).
+- **Firmware** `mise_en_station/mise_en_station.ino` (Nano, 38400 bauds) : se flashe depuis l'outil de configuration (« Arduino Nano (Mise en station) » ; l'ancien chargeur de démarrage des clones est essayé si besoin). Mouvements en pas avec rampe, rattrapage du jeu (la vis arrive toujours sur sa cible dans le même sens), arrêt sur fin de course et sur perte du 12 V, réglages gardés en EEPROM. Les commandes sont décrites en tête du fichier.
+- **Logiciel** : onglet **Mise en station** du module Caméra de la carte du ciel (`photo.py`, calculs dans `mise_en_station_robot.py`).
+  1. Visez vers le méridien, entre 30° et 70° de hauteur, et cliquez « Mesurer l'axe » : 3 images, en ne tournant que l'axe d'AD (de 30° par défaut), donnent l'axe de la monture. Le suivi peut rester en marche.
+  2. « Correction automatique » : au premier usage, chaque moteur fait un petit mouvement pour la calibration (pas par minute d'arc, gardée ensuite). Puis les deux moteurs corrigent, une image mesure ce que la monture a vraiment fait, et la boucle continue. Sous la tolérance, l'axe est re-mesuré par 3 images pour vérifier.
+  - Sans carte, « Mesurer l'erreur » sert à régler les vis à la main : chaque image dit de combien tourner, et dans quel sens.
+  - Option « pôle relevé par la réfraction », pour une monture qui suit sans corriger la réfraction.
+- **Essai sans matériel** : `python3 mise_en_station/essai_mise_en_station.py` fait tourner le firmware dans un émulateur PC (`mise_en_station/emulateur/`) face à une monture simulée (vis avec du jeu, charnière imparfaite, suivi, Nord et Sud).
