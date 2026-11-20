@@ -676,6 +676,7 @@ def page_materiel(depot, sortie, version):
         fichiers_boitier = "\n".join(filter(None, [
             *(fichier(rep / f"{boitier}_{p}.stl", f"{p.replace('_', ' ').capitalize()} (.stl)") for p in pieces),
             fichier(rep / f"{boitier}.scad", "Source OpenSCAD (.scad)"),
+            fichier(rep / f"{boitier}_assemblage.FCStd", "Assemblage FreeCAD : carte dans son boîtier (.FCStd)"),
             fichier(rep / f"boutons_{carte}.py", "Source FreeCAD des boutons (.py)")]))
         partie_boitier = f"""<h3>Boîtier à imprimer</h3>
 <div class="vues">
