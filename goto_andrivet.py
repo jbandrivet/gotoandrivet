@@ -2965,8 +2965,31 @@ class App(tk.Tk):
         except:
             messagebox.showwarning(TRANSLATIONS[lang]["sync_frame"], TRANSLATIONS[lang]["msg_sync_invalid"]); return
         resp=self.mount.sync(ra,dec)
-        self._logw(f"Sync RA{Astro.fmt_ra(ra)} → {resp}","tx")
-        self._status("Synchronisation effectuée." if lang == "fr" else "Synchronization completed.")
+        fr = lang == "fr"
+        if resp == "OK":
+            self._logw(f"Sync RA{Astro.fmt_ra(ra)} → {resp}","tx")
+            self._status("Synchronisation effectuée." if fr else "Synchronization completed.")
+            return
+        self._logw(f"Sync RA{Astro.fmt_ra(ra)} → {resp}","err")
+        if resp == "E6":
+            # Comme OnStepX : synchro refusee a plus de 85 deg de declinaison (pres du
+            # pole, l'AD ne dit pas ou est l'axe). La monture garde sa position.
+            msg = ("Synchronisation refusée : trop près du pôle (déclinaison au-delà de 85°).\n"
+                   "Près du pôle, l'AD ne dit pas où est l'axe AD. La monture garde sa position "
+                   "de départ, qui est déjà juste si elle a démarré parquée.\n"
+                   "Pour affiner, synchronisez sur une étoile plus basse.") if fr else (
+                   "Sync refused: too close to the pole (declination beyond 85°).\n"
+                   "Near the pole, RA does not tell where the RA axis is. The mount keeps its "
+                   "starting position, already right if it started parked.\n"
+                   "To refine, sync on a lower star.")
+        elif resp in ("E9", ""):
+            msg = "Synchronisation refusée : régler la date et l'heure d'abord." if fr else \
+                  "Sync refused: set the date and time first."
+        else:
+            msg = (f"Synchronisation refusée par la monture ({resp})." if fr else
+                   f"Sync refused by the mount ({resp}).")
+        self._status(msg.split("\n")[0])
+        messagebox.showwarning(TRANSLATIONS[lang]["sync_frame"], msg)
 
     def _spd_change(self, v):
         spd=round(float(v)*2)/2; self._splbl.configure(text=f"{spd:.1f}°/s")

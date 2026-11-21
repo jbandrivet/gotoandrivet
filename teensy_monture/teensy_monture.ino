@@ -877,7 +877,11 @@ static void refrHaDec(double *ha, double *dec, int sens) {
   // tourner l'axe horaire de plusieurs degres en quelques minutes, sans rien
   // gagner en precision (l'ecart reste sous 1'). Nulle au-dela de 89,8 deg.
   double fade = (89.8 - fabs(*dec)) / 0.8;
-  if (fade < 1.0) dist *= (fade > 0.0) ? fade : 0.0;
+  // Au-dela de 89,8 deg, rien a deplacer : on sort sans recalculer. En flottant
+  // 32 bits (Mega), cos(90 deg) vaut -4e-8 : le point refait par atan2 passait de
+  // l'autre cote du pole et l'angle horaire tournait de 180 deg.
+  if (fade <= 0.0) return;
+  if (fade < 1.0) dist *= fade;
   double cr = cos(dist * DEG_TO_RAD), sr = sin(dist * DEG_TO_RAD) / n;
   double wx = vx * cr + tx * sr, wy = vy * cr + ty * sr, wz = vz * cr + tz * sr;
   *ha = atan2(-wy, wx) * RAD_TO_DEG;
@@ -2401,6 +2405,19 @@ static void horizNow(double *alt, double *az) {
   *az = z;
 }
 
+// Synchro pres du pole (montures equatoriales), comme OnStepX (SYNC_POLE_LIMIT,
+// 85 deg par defaut) : refusee. Pres du pole, l'AD ne dit plus ou est l'axe AD,
+// tous les AD s'y rejoignent. Or des logiciels proposent par defaut DEC 90 et
+// AD = heure siderale, monture parquee. Pris tel quel, cet AD (angle horaire 0)
+// faisait tourner l'axe AD de 6 h dans la memoire de la monture (allemande parquee
+// contrepoids en bas = angle horaire 6 h, comme OnStepX) : tous les GoTo suivants
+// tombaient 90 deg a cote. La monture garde donc sa position, :CM# repond E6#
+// (hors limites, meme code qu'OnStepX) et :CS# ne fait rien.
+#define SYNC_POLE_LIMIT 85.0
+static bool syncNearPole(double dec_d) {
+  return mountType != 0 && fabs(dec_d) > SYNC_POLE_LIMIT;
+}
+
 static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   if(ci < 2) { out.print(F("0#")); return; }
   char c1=cmd[1], c2=cmd[2], c3 = (ci>3) ? cmd[3] : '\0';
@@ -2708,6 +2725,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     // "Unexpected return on sync call!" et fait echouer l'alignement.
     if(!timeSet) { out.print(F("E9#")); return; }   // 9 = erreur non precisee (heure non reglee)
     double ra_h=inRA/3600.0, dec_d=inDEC/3600.0;
+    if (syncNearPole(dec_d)) { out.print(F("E6#")); return; }
     
     // MODELE N-ETOILES
     double ideal_alt, ideal_az;
@@ -2769,6 +2787,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   if(c1=='C'&&c2=='S'){
     if(!timeSet) return;
     double ra_h=inRA/3600.0, dec_d=inDEC/3600.0;
+    if (syncNearPole(dec_d)) return;
     // Position machine AVEC le modele de pointage, comme le suivi (rd2mach) : avec
     // ideal_rd2aa_at (sans modele), le suivi visait ensuite une autre position et la
     // monture glissait de l'ecart du modele juste apres la synchronisation.
