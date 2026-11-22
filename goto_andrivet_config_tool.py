@@ -287,8 +287,9 @@ class ConfigToolApp(tk.Tk):
         # TLE cleanup (older than 24h)
         self.cleanup_old_tle()
         
-        # Check for updates in background
-        threading.Thread(target=self.check_for_updates, daemon=True).start()
+        # Check for updates in background — lancé depuis la boucle Tk : un fil qui appelle
+        # self.after() avant mainloop() lève « main thread is not in main loop »
+        self.after(500, lambda: threading.Thread(target=self.check_for_updates, daemon=True).start())
 
     def cleanup_old_tle(self):
         import time

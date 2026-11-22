@@ -2281,7 +2281,9 @@ class App(tk.Tk):
         self.bind_all("<Key>", self._on_key)
         self._tick()
         self.protocol("WM_DELETE_WINDOW", self._quit)
-        threading.Thread(target=self._check_update, daemon=True).start()
+        # lancé depuis la boucle Tk : un fil qui appelle self.after() avant mainloop()
+        # lève « main thread is not in main loop »
+        self.after(500, lambda: threading.Thread(target=self._check_update, daemon=True).start())
 
     # ============================================================
     #  CONSTRUCTION UI
