@@ -273,10 +273,12 @@ class ConfigToolApp(tk.Tk):
         lang = self.settings.get("language", "fr")
         t = TRANSLATIONS[lang]
         self.title(t["title"].strip())
-        self.geometry("700x1100")
-        self.minsize(680, 800)
+        # Hauteur de départ bornée à l'écran (1366x768 : la fenêtre dépassait en bas)
+        haut = min(1100, max(400, self.winfo_screenheight() - 80))
+        self.geometry(f"700x{haut}+0+0")
+        self.minsize(680, 400)
         self.configure(bg="#c0c0c0") # Classic Windows 95 grey
-        self.resizable(False, True)
+        self.resizable(True, True)
 
         # Build UI in Windows 95 Style
         self.build_ui()
