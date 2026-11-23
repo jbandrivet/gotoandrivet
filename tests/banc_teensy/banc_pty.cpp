@@ -2,6 +2,7 @@
 // (driver INDI lx200_OnStep, carte du ciel...) s'y connecte comme a la monture.
 //   banc_pty <lien> [type]    lien = chemin du lien vers le pty (ex. /tmp/monture)
 // Serial (USB) du firmware <-> pty. Arret par Ctrl-C ou SIGTERM.
+// Firmware Mega : compiler avec -DBANC_MEGA -fsingle-precision-constant (voir banc.h).
 #include "banc.h"
 #include <fcntl.h>
 #include <unistd.h>
@@ -59,7 +60,11 @@ int main(int argc, char** argv) {
     }
     std::string out = Serial.take();
     if (out.rfind("N/A#", 0) == 0 || out.rfind("E", 0) == 0)
+#ifdef BANC_MEGA
+      fprintf(stderr, "           -> %s\n", out.c_str());
+#else
       fprintf(stderr, "           -> %s  (points : %d)\n", out.c_str(), numSyncPoints);
+#endif
     if (!out.empty()) { ssize_t r = write(fdm, out.data(), out.size()); (void)r; }
     // Temps reel : le temps simule ne prend pas d'avance sur l'horloge murale.
     for (;;) {

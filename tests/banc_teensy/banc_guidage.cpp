@@ -4,7 +4,11 @@
 // qu'elle durait (vu sur le vrai Teensy : 5 s = 18-22" au lieu de 37,6").
 // On mesure l'ecart de l'etoile sur chaque axe (pas reellement faits - position
 // voulue), a la fin de l'impulsion et 10 s apres. Argument : 1 = fourche, 2 = allemande.
+// Compile aussi pour le Mega (-DBANC_MEGA, voir banc.h).
 #include "banc.h"
+#ifdef BANC_MEGA
+#define ideal_rd2aa_at rd2aa_at
+#endif
 
 static int echecs = 0;
 #define VERIF(c, ...) do { if (c) printf("  ok    "); else { printf("  ECHEC "); echecs++; } printf(__VA_ARGS__); printf("\n"); } while (0)

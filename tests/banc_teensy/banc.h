@@ -1,8 +1,17 @@
 // Banc d'essai : inclut le firmware et fournit les outils communs aux tests.
 // Compiler avec -DFIRMWARE='"chemin/teensy_monture.ino"' -Istubs.
+// Avec -DBANC_MEGA (et -fsingle-precision-constant) : firmware mega_monture,
+// registres AVR imites par mega_shim.h, calculs en flottant 32 bits comme sur le Mega.
 #pragma once
+#ifdef BANC_MEGA
+#include "mega_shim.h"
+#else
 #include "arduino_shim.h"
+#endif
 #include "stubs/SPI.h"
+#include <vector>
+#include <random>
+#include <algorithm>
 
 BancClock g_clk;
 void (*g_pinHook)(uint8_t, uint8_t) = nullptr;
@@ -12,16 +21,16 @@ BancSPI SPI1;
 
 void playStartupMelody();
 void playArrivalMelody();
+#ifdef BANC_MEGA
+void banc_isr_TIMER1_COMPA_vect();
+#define double float
+#endif
 // Prototypes que l'IDE Arduino genere seul pour un .ino.
 static void setTrk(double ra_h, double dec_d);
 static void ideal_aa2rd(double alt, double az, long *rs, long *ds);
 static void trackRestartAfterSlew();
 
 #include FIRMWARE
-
-#include <vector>
-#include <random>
-#include <algorithm>
 
 // ------------------------------------------------ monture physique (pas reels)
 // Compte les impulsions STEP avec le niveau DIR : position reelle des moteurs.
@@ -78,6 +87,10 @@ static std::string fmtLat(double v) {
 static void bancSetup(int mount, double lat, double lonEast) {
   g_pinHook = bancPinHook;
   setup();
+#ifdef BANC_MEGA
+  // Timer1 du Mega : 16 MHz / 8 / (OCR1A + 1) = 10 kHz.
+  g_clk.isr = banc_isr_TIMER1_COMPA_vect; g_clk.period = 100; g_clk.next = g_clk.us + 100;
+#endif
   cmd(mount == 0 ? ":BMa#" : mount == 1 ? ":BMe#" : ":BMg#");
   cmd(":St" + fmtLat(lat) + "#");
   char b[32];

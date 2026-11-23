@@ -116,6 +116,12 @@ static bool synced=false;
 static bool parked=false;
 static bool atHome=false;
 static volatile bool guiding=false;   // ecrit aussi par l'ISR (fin d'impulsion)
+// Deplacement donne par le guidage (:Mg) depuis la derniere cible de suivi, en
+// millioniemes de pas (unite de az_accum/alt_accum), cumule par l'ISR. doTrack()
+// decale la cible d'autant : sans cela le servo prenait l'impulsion pour une
+// erreur et la defaisait pendant qu'elle durait (vu sur le Teensy, meme code :
+// 5 s de guidage = 18-22" au lieu de 37,6"). Remis a zero a chaque nouvelle cible.
+static volatile int64_t guideSumAz = 0, guideSumAlt = 0;
 static volatile bool limitHit=false; // Volatile because modified in ISR
 static bool alarmActive = false;
 static bool buzzerEnabled = true;
@@ -364,15 +370,19 @@ static uint8_t daysInMonth(int m, int y) {
   return d[m-1];
 }
 
+// En secondes entieres. Le calcul en heures decimales tronquait parfois les
+// secondes (2/3600 h * 3600 = 1,999... -> 1, plus souvent encore en flottant
+// 32 bits) : l'heure reculait d'une seconde pendant une seconde entiere, la cible
+// du suivi sautait de 15" en AD et la monture courait apres (vu sur le banc
+// d'essai, meme defaut que sur le Teensy).
 static void getUTC(int *uy, int *um, int *ud, int *uh, int *umi, int *us) {
-  double utcH = dt_h + dt_mi/60.0 + dt_s/3600.0 + utcOff;
+  long t = (long)dt_h * 3600L + (long)dt_mi * 60L + (long)dt_s + lround(utcOff * 3600.0);
   int dayOff = 0;
-  while(utcH < 0.0)   { utcH += 24.0; dayOff--; }
-  while(utcH >= 24.0) { utcH -= 24.0; dayOff++; }
-  *uh  = (int)utcH;
-  double rem = (utcH - *uh) * 60.0;
-  *umi = (int)rem;
-  *us  = (int)((rem - *umi) * 60.0);
+  while(t < 0)       { t += 86400L; dayOff--; }
+  while(t >= 86400L) { t -= 86400L; dayOff++; }
+  *uh  = (int)(t / 3600L);
+  *umi = (int)((t / 60L) % 60L);
+  *us  = (int)(t % 60L);
   *uy = dt_y; *um = dt_m; *ud = dt_d + dayOff;
   while(*ud < 1) {
     (*um)--;
@@ -665,6 +675,7 @@ static uint8_t trkEphRate = 0;
 static void setTrkRef(double ra_h, double dec_d, uint8_t rate, double eRA, double eDec) {
   trkRA = ra_h; trkDec = dec_d;
   trkEphRate = rate; trkEphRA = eRA; trkEphDec = eDec;
+  noInterrupts(); guideSumAz = 0; guideSumAlt = 0; interrupts();
 }
 
 // Toute nouvelle cible de suivi passe par ici (et non par trkRA = ...) : sinon,
@@ -806,15 +817,16 @@ static void rd2aa(double ra, double dec, double *alt, double *az) {
   rd2aa_at(ra, dec, alt, az, 0.0);
 }
 
-// Axes de la monture -> AD/dec vraies (refraction retiree).
-static void aa2rd(double alt, double az, long *rs, long *ds) {
+// Axes de la monture -> AD (h) / dec (deg) vraies (refraction retiree), sans
+// arrondi : aa2rd() les tronque en secondes, soit 15" en AD.
+static void aa2rd_d(double alt, double az, double *ra_h, double *dec_d) {
   refrMount(&alt, &az, -1);
   if (mountType == 1) {  
-    *ds = alt * 3600.0;
+    *dec_d = alt;
     double ra = lst() - (az / 15.0);
     while (ra < 0) ra += 24.0;
     while (ra >= 24.0) ra -= 24.0;
-    *rs = ra * 3600.0;
+    *ra_h = ra;
     return;
   }
   if (mountType == 2) { 
@@ -828,11 +840,11 @@ static void aa2rd(double alt, double az, long *rs, long *ds) {
       ha = fmod(az_norm + 180.0, 360.0);
       dec = 180.0 - alt;
     }
-    *ds = dec * 3600.0;
+    *dec_d = dec;
     double ra = lst() - (ha / 15.0);
     while (ra < 0) ra += 24.0;
     while (ra >= 24.0) ra -= 24.0;
-    *rs = ra * 3600.0;
+    *ra_h = ra;
     return;
   }
   double ar=alt*DEG_TO_RAD,zr=az*DEG_TO_RAD,lr=siteLat*DEG_TO_RAD;
@@ -844,7 +856,14 @@ static void aa2rd(double alt, double az, long *rs, long *ds) {
   if(sin(zr)>0)ha=360.0-ha;
   double ra=lst()-ha/15.0;
   if(ra<0)ra+=24.0; if(ra>=24)ra-=24.0;
-  *rs=(long)(ra*3600.0); *ds=(long)(dec*3600.0);
+  *ra_h = ra; *dec_d = dec;
+}
+
+// Axes de la monture -> AD/dec vraies en secondes entieres (troncature).
+static void aa2rd(double alt, double az, long *rs, long *ds) {
+  double ra, dec;
+  aa2rd_d(alt, az, &ra, &dec);
+  *rs = (long)(ra * 3600.0); *ds = (long)(dec * 3600.0);
 }
 
 static double getAstronomicalAlt(double ra, double dec) {
@@ -1540,11 +1559,11 @@ ISR(TIMER1_COMPA_vect) {
   // la CONTRIBUTION au mouvement est conditionnee par motionOK.
   long guideNetAz = 0, guideNetAlt = 0;
   if (guideTicksAz > 0) {
-    if (motionOK && azMove == 0) guideNetAz = guideAddAz;
+    if (motionOK && azMove == 0) { guideNetAz = guideAddAz; guideSumAz += guideNetAz; }
     if (--guideTicksAz == 0) guideAddAz = 0;
   }
   if (guideTicksAlt > 0) {
-    if (motionOK && altMove == 0) guideNetAlt = guideAddAlt;
+    if (motionOK && altMove == 0) { guideNetAlt = guideAddAlt; guideSumAlt += guideNetAlt; }
     if (--guideTicksAlt == 0) guideAddAlt = 0;
   }
   // Fin d'impulsion : guiding retombe ici et non dans doTrack(), qui sort en
@@ -1595,6 +1614,7 @@ ISR(TIMER1_COMPA_vect) {
           guideTicksAlt = 0; guideAddAlt = 0;
           guiding = false;
           guidePendingRebase = false;
+          guideSumAz = 0; guideSumAlt = 0;
         } else {
           stepAxisAlt(d);
           altPos = nextAlt;
@@ -1663,8 +1683,12 @@ static void doTrack() {
   if(millis()-lastTrkMs<200)return;
   lastTrkMs=millis();
 
-  // Recale la cible celeste sur la position atteinte apres guidage, sans
-  // purger le filtre de lissage (contrairement a force_tracking_rebase).
+  // Fin d'impulsion : la cible celeste est recalee sur la position atteinte
+  // (setTrk remet guideSum a zero), sans purger le filtre de lissage
+  // (contrairement a force_tracking_rebase). Pendant l'impulsion, la cible est
+  // decalee de guideSum plus bas, pour que le servo ne la combatte pas.
+  // Position sans arrondi : currRA est en secondes d'AD entieres (15"), et
+  // recaler la cible dessus la faisait sauter au hasard de +-7,5" en AD.
   if (guidePendingRebase) {
     noInterrupts();
     bool busy = (guideTicksAz > 0 || guideTicksAlt > 0);
@@ -1673,7 +1697,9 @@ static void doTrack() {
     if (!busy) {
       guiding = false;
       updatePos();
-      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
+      double r, d;
+      aa2rd_d(currAlt, currAz, &r, &d);
+      setTrk(r, d);
       last_full_trig_ms = 0;
     }
   }
@@ -1744,6 +1770,11 @@ static void doTrack() {
   
   double tZ = trk_base_az + trk_speed_az * elapsed_lst;
   double tA = trk_base_alt + trk_speed_alt * elapsed_lst;
+  noInterrupts();
+  const int64_t gAz = guideSumAz, gAlt = guideSumAlt;
+  interrupts();
+  tZ += (double)gAz  / 1e6 / AZ_PPD;
+  tA += (double)gAlt / 1e6 / ALT_PPD;
   
   double steps_per_sec_az = (trk_speed_az * AZ_PPD) / 3600.0;
   double steps_per_sec_alt = (trk_speed_alt * ALT_PPD) / 3600.0;
