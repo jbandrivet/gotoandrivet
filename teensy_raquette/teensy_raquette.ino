@@ -1171,7 +1171,7 @@ enum UIState {
     UI_MOUNT, UI_RATIO_AZ, UI_RATIO_ALT, UI_BEEP, UI_OFFLINE,
     UI_MESSAGE, UI_EDIT_TIME, UI_EDIT_LOCATION, UI_MENU_SELECT,
     UI_MOTOR_POWER, UI_LANGUAGE, UI_ALIGN_CENTER, UI_GPS, UI_COORD_MODE,
-    UI_CUSTOM_GOTO, UI_SPIRAL
+    UI_CUSTOM_GOTO, UI_SPIRAL, UI_MODEL, UI_PEC
 };
 UIState uiState = UI_MAIN;
 
@@ -1391,11 +1391,12 @@ void precessToDate(double &ra_h, double &dec_d){
 }
 
 // Synchronisation sur une cible ; ofDate : coordonnees deja de la date (Systeme solaire)
-void cmd_sync_on(double ra_h, double dec_d, bool ofDate){
+// Rend la reponse de la monture : "N/A" acceptee, "E<n>" ou "E9,<deg>" refusee.
+String cmd_sync_on(double ra_h, double dec_d, bool ofDate){
     if (!ofDate) precessToDate(ra_h, dec_d);
     mega_cmd(":Sr"+formatRA(ra_h));
     mega_cmd(":Sd"+formatDEC(dec_d));
-    mega_cmd(":CM");
+    return mega_cmd(":CM");
 }
 
 // GoTo ; ofDate : coordonnees deja de la date (Systeme solaire), sinon J2000 (catalogues).
@@ -1451,6 +1452,124 @@ void showMessage(const char* line0, const char* line1, unsigned long ms, int ret
     uiMsgReturn = returnTo;
     uiState     = UI_MESSAGE;
     lcdNeedsRefresh = true;
+}
+
+// Resultat d'une synchro a l'ecran. Acceptee : nombre d'etoiles du modele et
+// erreur restante (monture Teensy, :GXMS#). Refusee : la raison. "E9,<deg>" =
+// trop loin du modele, sans doute pas la bonne etoile ; refaite au meme endroit,
+// la monture l'accepte et repart de zero. Rend true si acceptee.
+bool showSyncResult(const String& r, int okReturn, int failReturn) {
+    char l0[21], l1[21] = "";
+    if (r == "N/A") {
+        String m = mega_cmd(":GXMS");
+        int c1 = m.indexOf(','), c2 = m.indexOf(',', c1 + 1), c3 = m.indexOf(',', c2 + 1);
+        snprintf(l0, 21, "%s", isEnglish ? "  SYNCHRONIZED  " : "  SYNCHRONISE   ");
+        if (c1 > 0 && c3 > 0) {
+            int n = m.toInt();
+            float e = m.substring(c2 + 1, c3).toFloat();
+            if (e >= 0) snprintf(l1, 21, isEnglish ? "%d stars, err %.1f'" : "%d etoiles err %.1f'", n, e);
+            else        snprintf(l1, 21, isEnglish ? "%d star(s)" : "%d etoile(s)", n);
+        }
+        showMessage(l0, l1, 2000, okReturn);
+        return true;
+    }
+    snprintf(l0, 21, "%s", isEnglish ? "  SYNC REFUSED  " : "  SYNC REFUSEE  ");
+    if (r.startsWith("E9,")) {
+        snprintf(l0, 21, isEnglish ? "REFUSED: %s deg off" : "REFUSEE: a %s deg", r.substring(3).c_str());
+        snprintf(l1, 21, "%s", isEnglish ? "Again = new model" : "Refaire=nouv. modele");
+        showMessage(l0, l1, 4000, failReturn);
+        return false;
+    }
+    if (r == "E5")      snprintf(l1, 21, "%s", isEnglish ? "GOTO IN PROGRESS" : "GOTO EN COURS");
+    else if (r == "E6") snprintf(l1, 21, "%s", isEnglish ? "TOO CLOSE TO POLE" : "TROP PRES DU POLE");
+    else if (r == "E9") snprintf(l1, 21, "%s", isEnglish ? "TIME NOT SET" : "HEURE NON REGLEE");
+    else                snprintf(l1, 21, "%s", r.c_str());
+    showMessage(l0, l1, 2500, failReturn);
+    return false;
+}
+
+// Ecrans Modele de pointage et PEC (monture Teensy) : lignes 1 a 3, relues
+// toutes les 2 s tant que l'ecran est affiche.
+char precL[3][21] = {"", "", ""};
+unsigned long precFetchMs = 0;
+char pecStateChar = 'I';       // etat PEC lu par :GXPE# (I, p, P, r, R)
+// Modele lu (:GXMS#) : monture Teensy. La Mega lit :CMU# comme :CM# (synchro
+// sur la derniere cible) : ne le lui envoyer jamais.
+bool precModelOk = false;
+
+static int splitFloats(const String& m, float* v, int maxn) {
+    int k = 0, st = 0;
+    for (int i = 0; i <= (int)m.length() && k < maxn; i++) {
+        if (i == (int)m.length() || m[i] == ',') { v[k++] = m.substring(st, i).toFloat(); st = i + 1; }
+    }
+    return k;
+}
+
+void fetchModel() {
+    float v[10];
+    String m = mega_cmd(":GXMS");
+    int k = splitFloats(m, v, 10);
+    for (int i = 0; i < 3; i++) precL[i][0] = '\0';
+    precModelOk = (k >= 10);
+    if (k < 10) { snprintf(precL[0], 21, "%s", isEnglish ? "Not available" : "Indisponible"); return; }
+    int n = (int)v[0];
+    if (n == 0) snprintf(precL[0], 21, "%s", isEnglish ? "No star yet" : "Aucune etoile");
+    else if (v[2] >= 0) snprintf(precL[0], 21, isEnglish ? "%d stars err %.1f'" : "%d etoiles err %.1f'", n, v[2]);
+    else snprintf(precL[0], 21, isEnglish ? "%d star(s)" : "%d etoile(s)", n);
+    if (n >= 2) {
+        if (mountType == 0) {
+            static const char* const DIRS[]  = {"N", "NE", "E", "SE", "S", "SO", "O", "NO"};
+            static const char* const DIRSE[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+            int d = ((int)((v[4] + 22.5f) / 45.0f)) % 8;
+            snprintf(precL[1], 21, isEnglish ? "Tilt %.0f' to %s" : "Calage %.0f' vers %s", v[3], isEnglish ? DIRSE[d] : DIRS[d]);
+        } else {
+            snprintf(precL[1], 21, isEnglish ? "Pole %s%.0f' %s%.0f'" : "Pole %s%.0f' %s%.0f'",
+                     v[3] >= 0 ? (isEnglish ? "hi " : "haut ") : (isEnglish ? "lo " : "bas "), fabs(v[3]),
+                     v[4] >= 0 ? "E " : (isEnglish ? "W " : "O "), fabs(v[4]));
+        }
+    }
+    snprintf(precL[2], 21, "%s", isEnglish ? "ENT=remove last" : "ENT=retirer derniere");
+}
+
+void fetchPec() {
+    for (int i = 0; i < 3; i++) precL[i][0] = '\0';
+    snprintf(precL[2], 21, "%s", isEnglish ? "ENT=play UP=record" : "ENT=lire HAUT=enreg.");
+    if (mountType == 0) {
+        snprintf(precL[0], 21, "%s", isEnglish ? "Alt-az: no PEC" : "Alt-az : pas de PEC");
+        precL[2][0] = '\0';
+        return;
+    }
+    String p = mega_cmd(":GXPE");
+    pecStateChar = 'I';
+    float v[5];
+    int k = splitFloats(p.length() > 2 ? p.substring(2) : String(""), v, 4);
+    if (p.length() < 3 || p[1] != ',' || k < 4) {
+        snprintf(precL[0], 21, "%s", isEnglish ? "Not available" : "Indisponible");
+        precL[2][0] = '\0';
+        return;
+    }
+    char st = p[0];
+    pecStateChar = st;
+    int teeth = (int)v[0], prog = (int)v[1];
+    bool valid = v[3] > 0.5f;
+    if (teeth == 0) {
+        snprintf(precL[0], 21, "%s", isEnglish ? "RA wheel not set" : "Roue AD non reglee");
+        snprintf(precL[1], 21, "%s", isEnglish ? "(configurator)" : "(configurateur)");
+        precL[2][0] = '\0';
+        return;
+    }
+    if (st == 'P')      snprintf(precL[0], 21, "%s", isEnglish ? "Playing" : "Lecture en cours");
+    else if (st == 'p') snprintf(precL[0], 21, "%s", isEnglish ? "Play (no tracking)" : "Lecture (sans suivi)");
+    else if (st == 'r') snprintf(precL[0], 21, "%s", isEnglish ? "Record: waiting" : "Enreg. : attente");
+    else if (st == 'R') snprintf(precL[0], 21, isEnglish ? "Recording %d%%" : "Enregistrement %d%%", prog);
+    else                snprintf(precL[0], 21, "%s", valid ? (isEnglish ? "Stopped" : "Arretee") : (isEnglish ? "No curve" : "Pas de courbe"));
+    if (valid) snprintf(precL[1], 21, isEnglish ? "%.0f\" pk-pk %d teeth" : "%.0f\" cc, %d dents", v[2], teeth);
+    else       snprintf(precL[1], 21, isEnglish ? "%d teeth" : "%d dents", teeth);
+}
+
+void printPrecision(bool pec) {
+    lcdLine(0, pec ? "[ PEC ]" : (isEnglish ? "[ POINTING MODEL ]" : "[ MODELE POINTAGE ]"));
+    for (int i = 0; i < 3; i++) lcdLine(i + 1, precL[i]);
 }
 
 // [v6.3] Synchronisation GPS automatique avant edition menu
@@ -1933,12 +2052,14 @@ void printSettings() {
         isEnglish ? "Location" : "Lieu Obs.", 
         isEnglish ? "Language" : "Langue",
         "GPS Auto",
-        isEnglish ? "Coord Display" : "Affichage Coord"
+        isEnglish ? "Coord Display" : "Affichage Coord",
+        isEnglish ? "Pointing Model" : "Modele Pointage",
+        "PEC"
     };
     
     char b1[21], b2[21], b3[21];
     int start = settingsSel;
-    if (start > 17 - 3) start = 17 - 3;
+    if (start > 19 - 3) start = 19 - 3;
     
     snprintf(b1, 21, "%c %s", (settingsSel == start) ? '>' : ' ', opts[start]);
     snprintf(b2, 21, "%c %s", (settingsSel == start + 1) ? '>' : ' ', opts[start + 1]);
@@ -2018,6 +2139,8 @@ void refreshLcd(){
         case UI_ALIGN_CENTER:printAlignCenter();break;
         case UI_PARKING:     printParking();    break;
         case UI_MESSAGE:     printMessage();    break;
+        case UI_MODEL:       printPrecision(false); break;
+        case UI_PEC:         printPrecision(true);  break;
         
         case UI_MOUNT: {
             lcdLine(0, "[ TYPE MONTURE ]");
@@ -2330,8 +2453,8 @@ void handleButtons(){
                     showMessage(isEnglish ? " BELOW HORIZON! " : " SOUS HORIZON ! ", "                ", 2000, UI_OBJECT_INFO);
                     return;
                 }
-                cmd_sync_on(ra, dec, currentCat == CAT_SYSSOL);
-                showMessage(isEnglish ? "  SYNCHRONIZED  " : "  SYNCHRONISE   ", "                ", 1500, UI_MAIN);
+                String r = cmd_sync_on(ra, dec, currentCat == CAT_SYSSOL);
+                showSyncResult(r, UI_MAIN, UI_OBJECT_INFO);
             }
             if(enter) {
                 double ra = 0, dec = 0;
@@ -2370,8 +2493,8 @@ void handleButtons(){
             break;
         case UI_SETTINGS:
             if(left)       { cmd_stop(); uiState=UI_MAIN; }
-            if(up)         { settingsSel=(settingsSel-1+17)%17; }
-            if(down)       { settingsSel=(settingsSel+1)%17; }
+            if(up)         { settingsSel=(settingsSel-1+19)%19; }
+            if(down)       { settingsSel=(settingsSel+1)%19; }
             if(right||enter){
                 if(settingsSel==0) { cmd_stop(); currentCat=CAT_MESSIER; objectIndex=0; uiState=UI_CAT_SELECT; }
                 else if(settingsSel==1) {
@@ -2425,6 +2548,8 @@ void handleButtons(){
                 else if(settingsSel==14) { temp_isEnglish = isEnglish; uiState=UI_LANGUAGE; }
                 else if(settingsSel==15) { temp_gpsEnabled = gpsEnabled; uiState=UI_GPS; }
                 else if(settingsSel==16) { temp_displayRaDec = displayRaDec; uiState=UI_COORD_MODE; }
+                else if(settingsSel==17) { fetchModel(); precFetchMs = millis(); uiState=UI_MODEL; }
+                else if(settingsSel==18) { fetchPec(); precFetchMs = millis(); uiState=UI_PEC; }
             }
             break;
 
@@ -2467,9 +2592,9 @@ void handleButtons(){
             if(enter) {
                 double ra =selectedIsStar?selectedStar.ra  :selectedObj.ra;
                 double dec=selectedIsStar?selectedStar.dec :selectedObj.dec;
-                cmd_sync_on(ra, dec, false);
-                showMessage(isEnglish ? "  SYNCHRONIZED  " : "  SYNCHRONISE   ", "                ", 1500, UI_MAIN);
-                isAlignWorkflow = false;
+                String r = cmd_sync_on(ra, dec, false);
+                // Refusee : on reste sur l'ecran de centrage pour recommencer.
+                if (showSyncResult(r, UI_MAIN, UI_ALIGN_CENTER)) isAlignWorkflow = false;
             }
             break;
 
@@ -2729,6 +2854,32 @@ void handleButtons(){
             }
             break;
 
+        case UI_MODEL:
+            if(left)  { uiState=UI_SETTINGS; }
+            if(enter && precModelOk) {
+                String r = mega_cmd(":CMU");
+                precFetchMs = 0;
+                if (r == "1") showMessage(isEnglish ? " LAST STAR REMOVED" : " ETOILE RETIREE", "", 1500, UI_MODEL);
+                else          showMessage(isEnglish ? " NO STAR TO REMOVE" : " AUCUNE ETOILE", "", 1500, UI_MODEL);
+            }
+            break;
+
+        case UI_PEC:
+            if(left)  { uiState=UI_SETTINGS; }
+            if(enter) {
+                fetchPec();
+                bool playing = (pecStateChar == 'P' || pecStateChar == 'p');
+                mega_cmd(playing ? ":$QZ-" : ":$QZ+", false);
+                precFetchMs = 0;
+            }
+            if(up && mountType != 0) {
+                mega_cmd(":$QZ/", false);
+                precFetchMs = 0;
+                showMessage(isEnglish ? "RECORD: 1 worm turn" : "ENREG. : 1 tour vis",
+                            isEnglish ? "guiding on, no GoTo" : "guidage, pas de GoTo", 3000, UI_PEC);
+            }
+            break;
+
         case UI_MESSAGE:
             if(up||down||left||right||enter){
                 uiState = (UIState)uiMsgReturn;
@@ -2862,6 +3013,10 @@ void loop(){
         if(uiState==UI_SLEWING && !m_isSlewing) {
             uiState=UI_MAIN;
             isParkingWorkflow = false;
+        }
+        if((uiState==UI_MODEL || uiState==UI_PEC) && millis()-precFetchMs >= 2000) {
+            if (uiState == UI_MODEL) fetchModel(); else fetchPec();
+            precFetchMs = millis();
         }
         lcdNeedsRefresh=true;
     }

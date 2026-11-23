@@ -90,6 +90,8 @@ struct SyncPoint {
   double mach_alt;
   double res_az;    // ecart restant apres les termes geometriques (pmFit)
   double res_alt;
+  double vx, vy, vz; // direction (vecteur unite) du point ideal, calculee par pmFit
+  bool   normal;     // allemande : cote normal du pilier (e entre -90 et 90)
 };
 static SyncPoint syncPoints[MAX_SYNC_POINTS];
 static int numSyncPoints = 0;
@@ -146,6 +148,7 @@ static bool     tmcStealth = true;                       // stealthChop a basse 
 static uint16_t tmcMicroDerot = 16, tmcMicroFocus = 16;  // AZ/ALT utilisent `microstep`
 static uint16_t backlashAz = 0;
 static uint16_t backlashAlt = 0;
+static uint16_t wormTeeth = 0;   // dents de la roue de l'axe 1 (PEC), 0 = pas de PEC
 static int focusSpeed = 1000;
 static int8_t focusMove = 0;
 static uint8_t slowSpeed=8;
@@ -211,6 +214,13 @@ const byte     EEPROM_TMC_MAGIC     = 0xA5;
 // (coordonnees ideales avec ou sans), puis les points (4 double chacun).
 const uint16_t EEPROM_ADDR_PM       = 256;   // 4 + 50 x 32 = 1604 octets
 const byte     EEPROM_PM_MAGIC      = 0xC7;
+// PEC : dents de la roue de l'axe 1 (reglage), puis la courbe : magic, origine
+// du tour de vis (long), courbe valide, lecture demandee, 256 x int16.
+const uint16_t EEPROM_ADDR_WORM_MAGIC = 117;
+const uint16_t EEPROM_ADDR_WORM_TEETH = 118;  // uint16
+const byte     EEPROM_WORM_MAGIC      = 0x3B;
+const uint16_t EEPROM_ADDR_PEC      = 2048;  // 8 + 256 x 2 = 520 octets
+const byte     EEPROM_PEC_MAGIC     = 0x9E;
 
 template <typename T>
 void eepromWrite(int address, const T& value) {
@@ -263,10 +273,20 @@ static void saveStateToEEPROM() {
   eepromWrite(EEPROM_ADDR_TMC_MS_DEROT, tmcMicroDerot);
   eepromWrite(EEPROM_ADDR_TMC_MS_FOCUS, tmcMicroFocus);
   EEPROM.update(EEPROM_ADDR_TMC_MAGIC, EEPROM_TMC_MAGIC);
+  eepromWrite(EEPROM_ADDR_WORM_TEETH, wormTeeth);
+  EEPROM.update(EEPROM_ADDR_WORM_MAGIC, EEPROM_WORM_MAGIC);
 }
 
 static void mach2rd(double mach_alt, double mach_az, long *rs, long *ds);
+static void mach2rd_d(double mach_alt, double mach_az, double *ra_h, double *dec_d);
+static void ideal_aa2rd_d(double alt, double az, double *ra_h, double *dec_d);
+static void axesFromSteps();
+static void trkHere();
 static long azPosFromAz(double az);
+static long pecOffsetSteps(long raw);
+static double pecSlope(long raw);
+static void pecLoad(bool wasParked);
+static void pecClear();
 static void pmLoad(bool wasParked);
 static void pmSave();
 static void pmClear();
@@ -314,6 +334,10 @@ static void loadStateFromEEPROM() {
       // et les supports fonctionnent comme avant.
       useSpiDrivers = true;
       saveStateToEEPROM();
+    }
+    if (EEPROM.read(EEPROM_ADDR_WORM_MAGIC) == EEPROM_WORM_MAGIC) {
+      eepromRead(EEPROM_ADDR_WORM_TEETH, wormTeeth);
+      if (wormTeeth > 2000) wormTeeth = 0;
     }
     if(backlashAz > 10000) backlashAz = 0;
     if(backlashAlt > 10000) backlashAlt = 0;
@@ -368,6 +392,7 @@ static void loadStateFromEEPROM() {
 
   recalculatePPD();
   pmLoad(wasParked);   // avant mach2rd : la position de parking passe par le modele
+  pecLoad(wasParked);
 
   // Monture declaree parquee : elle est a sa position de parking (et non a
   // az = 0, faux en allemande parquee contrepoids en bas).
@@ -378,7 +403,7 @@ static void loadStateFromEEPROM() {
   altPos = (long)(currAlt * ALT_PPD);
   mach2rd(currAlt, currAz, &currRA, &currDEC);
 
-  setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
+  trkHere();
 
   double d = 1.0e6 / (AZ_PPD * maxSlewRate);
   if(d < (double)STEP_DELAY_FAST) d = STEP_DELAY_FAST;
@@ -510,15 +535,18 @@ static uint8_t daysInMonth(int m, int y) {
   return d[m-1];
 }
 
+// En secondes entieres. Le calcul en heures decimales tronquait parfois les
+// secondes (2/3600 h * 3600 = 1,999... -> 1) : l'heure reculait d'une seconde
+// pendant une seconde entiere, la cible du suivi sautait de 15" en AD et la
+// monture courait apres (vu sur le banc d'essai, environ une seconde sur trois).
 static void getUTC(int *uy, int *um, int *ud, int *uh, int *umi, int *us) {
-  double utcH = dt_h + dt_mi/60.0 + dt_s/3600.0 + utcOff;
+  long t = (long)dt_h * 3600L + (long)dt_mi * 60L + (long)dt_s + lround(utcOff * 3600.0);
   int dayOff = 0;
-  while(utcH < 0.0)   { utcH += 24.0; dayOff--; }
-  while(utcH >= 24.0) { utcH -= 24.0; dayOff++; }
-  *uh  = (int)utcH;
-  double rem = (utcH - *uh) * 60.0;
-  *umi = (int)rem;
-  *us  = (int)((rem - *umi) * 60.0);
+  while(t < 0)       { t += 86400L; dayOff--; }
+  while(t >= 86400L) { t -= 86400L; dayOff++; }
+  *uh  = (int)(t / 3600L);
+  *umi = (int)((t / 60L) % 60L);
+  *us  = (int)(t % 60L);
   *uy = dt_y; *um = dt_m; *ud = dt_d + dayOff;
   while(*ud < 1) {
     (*um)--;
@@ -837,17 +865,25 @@ static void setTrackRate(uint8_t rate) {
 
 // ======================== REFRACTION ========================
 // L'atmosphere remonte les astres : 29' a l'horizon, 5,4' a 10 deg, 1' a 45 deg.
-// Formule de Saemundsson (hauteur vraie -> apparente), 1010 hPa et 10 deg C.
+// Formule de Saemundsson (hauteur vraie -> apparente), a la temperature et a la
+// pression du lieu : 10 deg C et 1010 hPa tant qu'on ne les donne pas par
+// :SX9A,<deg C># et :SX9B,<hPa># (commandes OnStep, envoyees aussi par le pilote
+// INDI, onglet meteo, et par la carte du ciel). Gardees jusqu'a l'extinction.
+// L'effet reste petit : 10 deg C d'ecart changent la refraction de 3,5 %, soit
+// 0,2' a 10 deg de hauteur. Un point deja synchronise n'est pas recalcule : sa
+// position etait juste avec la meteo du moment.
 // Appliquee au pointage comme au suivi (compensation complete). Active par
 // defaut ; :Tn# la coupe, :To# ou :Tr# la remettent ; drapeau 't' de :GU#.
-#define REFR_PRESSURE_HPA 1010.0
-#define REFR_TEMP_C       10.0
+static double refrPressHpa = 1010.0;
+static double refrTempC    = 10.0;
+static bool   weatherTSet = false, weatherPSet = false, weatherHSet = false;
+static double weatherHum = 0.0;
 static bool refractionOn = true;
 
 static double refrDeg(double hTrue) {
   if (hTrue < -1.0) hTrue = -1.0;      // au-dela la formule diverge : on fige sous l'horizon
   double r = 1.02 / tan((hTrue + 10.3 / (hTrue + 5.11)) * DEG_TO_RAD);   // minutes d'arc
-  r *= (REFR_PRESSURE_HPA / 1010.0) * (283.0 / (273.0 + REFR_TEMP_C));
+  r *= (refrPressHpa / 1010.0) * (283.0 / (273.0 + refrTempC));
   if (r < 0.0) r = 0.0;
   return r / 60.0;
 }
@@ -954,26 +990,49 @@ static void ideal_rd2aa_at(double ra, double dec, double *alt, double *az, doubl
 // horaire), e = axe 2 (hauteur ou declinaison ; au-dela de 90 deg du cote
 // retourne d'une allemande, ou les termes changent de signe d'eux-memes).
 // 1. Les defauts de la monture, ajustes par moindres carres sur les points de
-//    synchro : IH/ID decalage des codeurs, P/Q inclinaison de l'axe principal
-//    (mise en station ou calage), CH cone (tube pas d'equerre), NP axes pas
-//    perpendiculaires, TF flexion du tube (alt-az seulement) :
-//      da = IH + CH sec e + NP tan e + tan e (Q sin a - P cos a)
-//      de = ID + P sin a + Q cos a + TF cos e
-//    1 point : IH, ID ; 2 points : + P, Q ; 3 points et plus : tous.
-// 2. Ce qui reste a chaque point est interpole (IDW) pour tomber juste sur les
-//    etoiles de synchro. Loin d'elles, un point fictif sans ecart a PM_R0 deg
-//    fait s'effacer l'interpolation au profit des seuls defauts calcules.
-// Sur monture simulee (decalages 2 deg, mise en station 1 deg, cone 0,3 deg),
-// 6 etoiles donnent 0,5' d'erreur mediane sur tout le ciel, contre 16' a
-// 20' pour l'interpolation seule qu'utilisait le firmware jusque-la.
-#define PM_NPAR 7
+//    synchro :
+//      IH, ID   decalage des codeurs           da = IH            de = ID
+//      P, Q     inclinaison de l'axe principal da = tan e (Q sin a - P cos a)
+//               (mise en station ou calage)    de = P sin a + Q cos a
+//      CH       cone (tube pas d'equerre)      da = CH sec e
+//      NP       axes pas perpendiculaires      da = NP tan e
+//      TF       flexion du tube, qui pique vers l'horizon (proportionnelle au
+//               cosinus de la hauteur). Alt-az : de = TF cos e. Equatoriale,
+//               en angle horaire h et declinaison d vraies :
+//                 dh = TF cos(lat) sin h sec d
+//                 dd = TF (cos(lat) cos h sin d - sin(lat) cos d)
+//      FO       flexion de la fourche (fourche seulement) : de = FO cos a
+//      A1S/A1C  roue de l'axe 1 decentree      da = A1S sin a + A1C cos a
+//      A2S/A2C  roue de l'axe 2 decentree      de = A2S sin e + A2C cos e
+//               (equatoriales : en alt-az, la hauteur ne parcourt que 90 deg,
+//               ces termes s'y confondent avec ID et TF)
+//    Termes pris selon le nombre de points : 1 : IH ID ; 2 : + P Q ;
+//    3 : + CH NP ; 4 : + TF ; 5 : + FO ; 12 : + roues decentrees.
+// 2. Ce qui reste a chaque point est interpole (IDW, distance vraie sur le
+//    ciel) pour tomber juste sur les etoiles de synchro. Loin d'elles, un point
+//    fictif sans ecart a PM_R0 deg fait s'effacer l'interpolation au profit des
+//    seuls defauts calcules.
+// Banc d'essai (tests/banc_teensy/banc_modele.cpp) : monture simulee par sa
+// vraie geometrie (decalages 2 deg, mise en station 1 deg, cone 0,3 deg,
+// flexion, roues decentrees), etoiles centrees a 0,5' pres.
+enum { T_IH, T_ID, T_P, T_Q, T_CH, T_NP, T_TF, T_FO, T_A1S, T_A1C, T_A2S, T_A2C, PM_NPAR };
 #define PM_R0   20.0
 // Premier sync apres un redemarrage : au-dela de cet ecart (deg) avec le modele
 // garde en memoire, la monture a ete remontee ou deplacee, le modele est efface.
 #define PM_REUSE_MAX 0.25
+// Synchro suspecte (mauvaise etoile centree) : a partir de 3 points, une
+// synchro qui tombe a plus de PM_OUTLIER_MIN deg du modele (ou de 5 fois son
+// ecart habituel) est refusee (E9). Refaite au meme endroit, elle est
+// acceptee : la monture a bouge, l'ancien modele est efface.
+#define PM_OUTLIER_MIN   1.5
+#define PM_OUTLIER_SAME  2.0     // deg : "meme endroit" pour la confirmation
 static bool pmFromMemory = false;   // modele relu en memoire, pas encore confirme par un sync
-static double pmPar[PM_NPAR];   // IH ID P Q CH NP TF, en degres
+static double pmPar[PM_NPAR];   // valeurs des termes, en degres
 static uint8_t pmUsed = 0;      // nombre de termes ajustes
+static double pmRms = -1.0;     // ecart type des residus (deg), -1 si trop peu de points
+static double pmLastErr = 0.0;  // ecart au modele de la derniere synchro (deg)
+static bool pmSuspectArmed = false;
+static double pmSuspectAz = 0.0, pmSuspectAlt = 0.0;
 
 static double pmWrap(double x) {
   x = fmod(x, 360.0);
@@ -982,14 +1041,66 @@ static double pmWrap(double x) {
   return x;
 }
 
-static void pmTerms(double a, double e, double r1[PM_NPAR], double r2[PM_NPAR]) {
+// Angle vrai (deg) entre deux points en coordonnees monture. Le vecteur
+// (cos e cos a, cos e sin a, sin e) est le meme des deux cotes d'une allemande
+// (a + 180, 180 - e). Avant, la distance etait prise a plat en (a, e) : pres du
+// zenith (alt-az) ou du pole, deux points voisins paraissaient tres eloignes.
+// Allemande : deux points de cotes du pilier differents sont mis a 180 deg l'un
+// de l'autre, car le cone et la non-perpendicularite y changent de signe.
+static void pmVec(double a, double e, double *x, double *y, double *z) {
+  double ce = cos(e * DEG_TO_RAD);
+  *x = ce * cos(a * DEG_TO_RAD); *y = ce * sin(a * DEG_TO_RAD); *z = sin(e * DEG_TO_RAD);
+}
+
+// Angle (deg) entre deux vecteurs unite, par la corde : precis aussi pour les petits angles.
+static double pmVecDist(double x1, double y1, double z1, double x2, double y2, double z2) {
+  double dx = x1 - x2, dy = y1 - y2, dz = z1 - z2;
+  double ch = sqrt(dx * dx + dy * dy + dz * dz) * 0.5;
+  if (ch > 1.0) ch = 1.0;
+  return 2.0 * asin(ch) * RAD_TO_DEG;
+}
+
+static double pmDist(double a1, double e1, double a2, double e2) {
+  if (mountType == 2 && ((e1 >= -90.0 && e1 <= 90.0) != (e2 >= -90.0 && e2 <= 90.0))) return 180.0;
+  double x1, y1, z1, x2, y2, z2;
+  pmVec(a1, e1, &x1, &y1, &z1);
+  pmVec(a2, e2, &x2, &y2, &z2);
+  return pmVecDist(x1, y1, z1, x2, y2, z2);
+}
+
+// Tableaux de PM_NPAR termes (pointeurs : l'IDE Arduino recopie les prototypes
+// en tete du fichier, avant la definition de PM_NPAR).
+static void pmTerms(double a, double e, double *r1, double *r2) {
+  for (int k = 0; k < PM_NPAR; k++) { r1[k] = 0.0; r2[k] = 0.0; }
   double ce = cos(e * DEG_TO_RAD), se = sin(e * DEG_TO_RAD);
   double cl = ce;                                   // borne : sec et tan a 87 deg
   if (fabs(cl) < 0.0523) cl = (cl < 0.0) ? -0.0523 : 0.0523;
   double sec = 1.0 / cl, tn = se / cl;
   double sa = sin(a * DEG_TO_RAD), ca = cos(a * DEG_TO_RAD);
-  r1[0] = 1; r1[1] = 0; r1[2] = -ca * tn; r1[3] = sa * tn; r1[4] = sec; r1[5] = tn; r1[6] = 0;
-  r2[0] = 0; r2[1] = 1; r2[2] = sa;       r2[3] = ca;      r2[4] = 0;   r2[5] = 0;  r2[6] = (mountType == 0) ? ce : 0.0;
+  r1[T_IH] = 1.0;
+  r2[T_ID] = 1.0;
+  r1[T_P] = -ca * tn;  r2[T_P] = sa;
+  r1[T_Q] = sa * tn;   r2[T_Q] = ca;
+  r1[T_CH] = sec;
+  r1[T_NP] = tn;
+  r1[T_A1S] = sa; r1[T_A1C] = ca;
+  if (mountType == 0) {
+    r2[T_TF] = ce;
+    return;
+  }
+  r2[T_A2S] = se; r2[T_A2C] = ce;
+  if (mountType == 1) r2[T_FO] = ca;
+  // Flexion : effet de la pesanteur, donc dans le ciel (angle horaire et dec
+  // vrais), ramene aux coordonnees de la monture (de change de signe du cote
+  // retourne de l'allemande, ou e = 180 - dec).
+  bool flipped = (mountType == 2) && !(e >= -90.0 && e <= 90.0);
+  double h = flipped ? a + 180.0 : a, d = flipped ? 180.0 - e : e;
+  double sh = sin(h * DEG_TO_RAD), chh = cos(h * DEG_TO_RAD);
+  double sd = sin(d * DEG_TO_RAD), cd = cos(d * DEG_TO_RAD);
+  double cdl = (fabs(cd) < 0.0523) ? ((cd < 0.0) ? -0.0523 : 0.0523) : cd;
+  double cp = cos(siteLat * DEG_TO_RAD), sp = sin(siteLat * DEG_TO_RAD);
+  r1[T_TF] = cp * sh / cdl;
+  r2[T_TF] = (flipped ? -1.0 : 1.0) * (cp * chh * sd - sp * cd);
 }
 
 static void pmGeom(double a, double e, double *da, double *de) {
@@ -999,17 +1110,38 @@ static void pmGeom(double a, double e, double *da, double *de) {
   for (int k = 0; k < PM_NPAR; k++) { *da += r1[k] * pmPar[k]; *de += r2[k] * pmPar[k]; }
 }
 
+// Termes ajustes pour n points, dans l'ordre ou ils entrent.
+static int pmActive(int n, uint8_t *idx) {
+  int m = 0;
+  if (n >= 1) { idx[m++] = T_IH; idx[m++] = T_ID; }
+  if (n >= 2) { idx[m++] = T_P;  idx[m++] = T_Q; }
+  if (n >= 3) { idx[m++] = T_CH; idx[m++] = T_NP; }
+  if (n >= 4) idx[m++] = T_TF;
+  if (n >= 5 && mountType == 1) idx[m++] = T_FO;
+  if (n >= 12) {
+    idx[m++] = T_A1S; idx[m++] = T_A1C;
+    if (mountType != 0) { idx[m++] = T_A2S; idx[m++] = T_A2C; }
+  }
+  return m;
+}
+
 // Ajuste les termes sur les points de synchro, puis calcule les residus.
 static void pmFit() {
   for (int k = 0; k < PM_NPAR; k++) pmPar[k] = 0.0;
   pmUsed = 0;
+  pmRms = -1.0;
   int n = numSyncPoints;
   if (n <= 0) return;
-  int np = (n == 1) ? 2 : (n == 2) ? 4 : (mountType == 0 && n >= 4) ? 7 : 6;
-  // Rappel vers zero (a priori : inclinaison ~2 deg, cone/NP ~1 deg, flexion
-  // ~0,5 deg, mesures a 0,1 deg) : evite les termes absurdes quand les points
-  // sont mal repartis. Sans effet notable des que les etoiles sont ecartees.
-  static const double prior[PM_NPAR] = {0.0, 0.0, 0.0025, 0.0025, 0.01, 0.01, 0.04};
+  uint8_t idx[PM_NPAR];
+  int np = pmActive(n, idx);
+  // Rappel vers zero (a priori, mesures a 0,1 deg : inclinaison ~2 deg,
+  // cone/NP ~1 deg, flexions ~0,25 deg, roues decentrees ~0,1 deg) : evite les
+  // termes absurdes quand les points sont mal repartis. Sans effet notable des
+  // que les etoiles sont ecartees. Regle sur le banc d'essai : plus faible, la
+  // flexion et les roues absorbaient le bruit de centrage et degradaient le
+  // pointage des montures qui n'en ont pas.
+  static const double prior[PM_NPAR] = {0.0, 0.0, 0.0025, 0.0025, 0.01, 0.01, 0.16, 0.16,
+                                        1.0, 1.0, 1.0, 1.0};
   double N[PM_NPAR][PM_NPAR + 1];
   for (int r = 0; r < np; r++) for (int c = 0; c <= np; c++) N[r][c] = 0.0;
   for (int i = 0; i < n; i++) {
@@ -1018,11 +1150,15 @@ static void pmFit() {
     double y1 = pmWrap(syncPoints[i].mach_az - syncPoints[i].ideal_az);
     double y2 = pmWrap(syncPoints[i].mach_alt - syncPoints[i].ideal_alt);
     for (int r = 0; r < np; r++) {
-      for (int c = 0; c < np; c++) N[r][c] += r1[r] * r1[c] + r2[r] * r2[c];
-      N[r][np] += r1[r] * y1 + r2[r] * y2;
+      for (int c = 0; c < np; c++) N[r][c] += r1[idx[r]] * r1[idx[c]] + r2[idx[r]] * r2[idx[c]];
+      N[r][np] += r1[idx[r]] * y1 + r2[idx[r]] * y2;
     }
   }
-  for (int k = 0; k < np; k++) N[k][k] += prior[k];
+  for (int k = 0; k < np; k++) {
+    // Alt-az : la flexion garde son ancien rappel (0,5 deg), meilleur sur le banc.
+    double pr = (idx[k] == T_TF && mountType == 0) ? 0.04 : prior[idx[k]];
+    N[k][k] += pr;
+  }
   // Gauss avec pivot partiel
   bool ok = true;
   for (int c = 0; c < np && ok; c++) {
@@ -1038,26 +1174,35 @@ static void pmFit() {
   }
   if (ok) {
     for (int k = 0; k < np; k++) {
-      pmPar[k] = N[k][np] / N[k][k];
-      if (!(fabs(pmPar[k]) < 15.0)) ok = false;     // aberrant (ou NaN) : on renonce
+      double v = N[k][np] / N[k][k];
+      if (!(fabs(v) < 15.0)) { ok = false; break; }     // aberrant (ou NaN) : on renonce
+      pmPar[idx[k]] = v;
     }
   }
   if (!ok) {
     // Repli : simple decalage moyen, comme une synchro a une etoile.
     for (int k = 0; k < PM_NPAR; k++) pmPar[k] = 0.0;
     for (int i = 0; i < n; i++) {
-      pmPar[0] += pmWrap(syncPoints[i].mach_az - syncPoints[i].ideal_az) / n;
-      pmPar[1] += pmWrap(syncPoints[i].mach_alt - syncPoints[i].ideal_alt) / n;
+      pmPar[T_IH] += pmWrap(syncPoints[i].mach_az - syncPoints[i].ideal_az) / n;
+      pmPar[T_ID] += pmWrap(syncPoints[i].mach_alt - syncPoints[i].ideal_alt) / n;
     }
     np = 2;
   }
   pmUsed = (uint8_t)np;
+  double s2 = 0.0;
   for (int i = 0; i < n; i++) {
+    SyncPoint &q = syncPoints[i];
+    pmVec(q.ideal_az, q.ideal_alt, &q.vx, &q.vy, &q.vz);
+    q.normal = (q.ideal_alt >= -90.0 && q.ideal_alt <= 90.0);
     double da, de;
     pmGeom(syncPoints[i].ideal_az, syncPoints[i].ideal_alt, &da, &de);
     syncPoints[i].res_az = pmWrap(syncPoints[i].mach_az - syncPoints[i].ideal_az) - da;
     syncPoints[i].res_alt = pmWrap(syncPoints[i].mach_alt - syncPoints[i].ideal_alt) - de;
+    double ra = syncPoints[i].res_az * cos(syncPoints[i].ideal_alt * DEG_TO_RAD);
+    s2 += ra * ra + syncPoints[i].res_alt * syncPoints[i].res_alt;
   }
+  // Ecart type d'un point sur le ciel (deux mesures par etoile, np inconnues).
+  if (2 * n > np) pmRms = sqrt(s2 / (2 * n - np));
 }
 
 // Correction totale (machine - ideal) au point ideal (a, e).
@@ -1065,16 +1210,92 @@ static void pmCorr(double a, double e, double *da, double *de) {
   pmGeom(a, e, da, de);
   if (numSyncPoints == 0) return;
   double sw = 1.0 / (PM_R0 * PM_R0), s1 = 0.0, s2 = 0.0;
+  // Directions des points rangees par pmFit : un seul jeu de sinus/cosinus ici
+  // (cette correction est relue 6 fois a chaque lecture de la position).
+  double x, y, z;
+  pmVec(a, e, &x, &y, &z);
+  bool normal = (e >= -90.0 && e <= 90.0);
   for (int i = 0; i < numSyncPoints; i++) {
-    double d_alt = pmWrap(e - syncPoints[i].ideal_alt);
-    double d_az = pmWrap(a - syncPoints[i].ideal_az);
-    double dd = d_alt * d_alt + d_az * d_az;
+    const SyncPoint &q = syncPoints[i];
+    double d = (mountType == 2 && q.normal != normal) ? 180.0 : pmVecDist(x, y, z, q.vx, q.vy, q.vz);
+    double dd = d * d;
     if (dd < 0.0001) { *da += syncPoints[i].res_az; *de += syncPoints[i].res_alt; return; }
     double w = 1.0 / dd;
     sw += w; s1 += w * syncPoints[i].res_az; s2 += w * syncPoints[i].res_alt;
   }
   *da += s1 / sw;
   *de += s2 / sw;
+}
+
+// Les points sont ranges du plus ancien au plus recent ; plein, le plus ancien
+// est oublie. syncIndex (= numSyncPoints modulo MAX_SYNC_POINTS) reste ecrit en
+// EEPROM comme avant.
+static void pmAppend(double ia, double ie, double ma, double me) {
+  if (numSyncPoints >= MAX_SYNC_POINTS) {
+    for (int i = 1; i < MAX_SYNC_POINTS; i++) syncPoints[i - 1] = syncPoints[i];
+    numSyncPoints = MAX_SYNC_POINTS - 1;
+  }
+  SyncPoint &p = syncPoints[numSyncPoints++];
+  p.ideal_az = ia; p.ideal_alt = ie; p.mach_az = ma; p.mach_alt = me;
+  p.res_az = 0.0; p.res_alt = 0.0;
+  syncIndex = numSyncPoints % MAX_SYNC_POINTS;
+}
+
+static void pmRemoveAt(int j) {
+  if (j < 0 || j >= numSyncPoints) return;
+  for (int i = j + 1; i < numSyncPoints; i++) syncPoints[i - 1] = syncPoints[i];
+  numSyncPoints--;
+  syncIndex = numSyncPoints % MAX_SYNC_POINTS;
+}
+
+// Ancien rangement (tableau circulaire, EEPROM d'avant) -> du plus ancien au plus recent.
+static void pmNormalize() {
+  if (numSyncPoints < MAX_SYNC_POINTS || syncIndex == 0) { syncIndex = numSyncPoints % MAX_SYNC_POINTS; return; }
+  static SyncPoint tmp[MAX_SYNC_POINTS];
+  for (int i = 0; i < MAX_SYNC_POINTS; i++) tmp[i] = syncPoints[(syncIndex + i) % MAX_SYNC_POINTS];
+  for (int i = 0; i < MAX_SYNC_POINTS; i++) syncPoints[i] = tmp[i];
+  syncIndex = 0;
+}
+
+// Mise en station (equatoriales) ou calage (alt-az) d'apres P et Q, en degres.
+// Equatoriales, hemisphere du lieu : *haut > 0 = axe polaire trop haut, *est > 0
+// = axe polaire trop a l'est du pole. Alt-az : l'axe vertical penche de
+// *haut degres vers l'azimut *est. Signes verifies sur le banc d'essai.
+static void pmPolar(double *haut, double *est) {
+  double P = pmPar[T_P], Q = pmPar[T_Q];
+  if (mountType == 0) {
+    *haut = sqrt(P * P + Q * Q);
+    double z = atan2(P, Q) * RAD_TO_DEG;
+    if (z < 0.0) z += 360.0;
+    *est = z;
+    return;
+  }
+  // P > 0 incline l'axe vers l'angle horaire -6 h au pole nord, +6 h au pole
+  // sud ; Q > 0 le leve vers le zenith au nord, le baisse au sud.
+  double s = (siteLat < 0.0) ? -1.0 : 1.0;
+  *haut = s * Q;
+  *est = -s * P;
+}
+
+// :GXMS# -> "n,termes,ecart,haut,est,CH,NP,TF,FO,derniere#" : nombre de points,
+// termes ajustes, ecart type des residus (', -1 = pas encore estimable),
+// mise en station (voir pmPolar, ' ; en alt-az : inclinaison en ' et azimut en
+// deg), cone, non-perpendicularite, flexions (') et ecart au modele de la
+// derniere synchro refusee ou acceptee (').
+static void pmReport(Print& out) {
+  double haut, est;
+  pmPolar(&haut, &est);
+  out.print(numSyncPoints); out.write(',');
+  out.print((int)pmUsed); out.write(',');
+  out.print(pmRms < 0.0 ? -1.0 : pmRms * 60.0, 2); out.write(',');
+  out.print(haut * 60.0, 1); out.write(',');
+  out.print(mountType == 0 ? est : est * 60.0, 1); out.write(',');
+  out.print(pmPar[T_CH] * 60.0, 1); out.write(',');
+  out.print(pmPar[T_NP] * 60.0, 1); out.write(',');
+  out.print(pmPar[T_TF] * 60.0, 1); out.write(',');
+  out.print(pmPar[T_FO] * 60.0, 1); out.write(',');
+  out.print(pmLastErr * 60.0, 1);
+  out.write('#');
 }
 
 static void rd2mach_at(double ra, double dec, double *mach_alt, double *mach_az, double offset_sec) {
@@ -1098,7 +1319,7 @@ static void rd2mach(double ra, double dec, double *mach_alt, double *mach_az) {
 
 // Inverse de rd2mach : on cherche le point ideal dont la correction mene a la
 // position machine (point fixe, corrections petites : 6 tours suffisent).
-static void mach2rd(double mach_alt, double mach_az, long *rs, long *ds) {
+static void mach2rd_d(double mach_alt, double mach_az, double *ra_h, double *dec_d) {
   double ia = mach_az, ie = mach_alt;
   if (numSyncPoints > 0) {
     for (int k = 0; k < 6; k++) {
@@ -1110,7 +1331,24 @@ static void mach2rd(double mach_alt, double mach_az, long *rs, long *ds) {
     ia = fmod(ia, 360.0);
     if (ia < 0) ia += 360.0;
   }
-  ideal_aa2rd(ie, ia, rs, ds);
+  ideal_aa2rd_d(ie, ia, ra_h, dec_d);
+}
+
+static void mach2rd(double mach_alt, double mach_az, long *rs, long *ds) {
+  double ra, dec;
+  mach2rd_d(mach_alt, mach_az, &ra, &dec);
+  *rs = (long)(ra * 3600.0); *ds = (long)(dec * 3600.0);
+}
+
+// Le suivi repart de la ou pointe la monture. En double : currRA est en
+// secondes d'AD entieres (15"), et recaler la cible dessus apres chaque
+// impulsion de guidage la faisait sauter au hasard de +-7,5" en AD, contre
+// lesquels l'autoguideur se battait (vu sur le banc d'essai).
+static void trkHere() {
+  axesFromSteps();
+  double r, d;
+  mach2rd_d(currAlt, currAz, &r, &d);
+  setTrk(r, d);
 }
 
 // Bascule de la refraction : les points de synchro gardent des coordonnees
@@ -1145,6 +1383,7 @@ static void pmSave() {
 
 static void pmClear() {
   numSyncPoints = 0; syncIndex = 0; pmFromMemory = false;
+  pmSuspectArmed = false; pmLastErr = 0.0;
   pmFit();
   pmSave();
 }
@@ -1172,6 +1411,7 @@ static void pmLoad(bool wasParked) {
     }
     if (ok) {
       numSyncPoints = n; syncIndex = idx; pmFromMemory = true;
+      pmNormalize();                  // ancien rangement circulaire
       bool want = refractionOn;
       refractionOn = refr;            // coordonnees ideales telles qu'enregistrees
       if (refr != want) { setRefraction(want); return; }
@@ -1184,14 +1424,15 @@ static void pmLoad(bool wasParked) {
 
 
 // Coordonnees ideales de la monture -> AD/dec vraies (refraction retiree).
-static void ideal_aa2rd(double alt, double az, long *rs, long *ds) {
+// Coordonnees ideales de la monture -> AD (h) / dec (deg) vraies, en double.
+static void ideal_aa2rd_d(double alt, double az, double *ra_h, double *dec_d) {
   refrMount(&alt, &az, -1);
   if (mountType == 1) {  
-    *ds = alt * 3600.0;
+    *dec_d = alt;
     double ra = lst() - (az / 15.0);
     while (ra < 0) ra += 24.0;
     while (ra >= 24.0) ra -= 24.0;
-    *rs = ra * 3600.0;
+    *ra_h = ra;
     return;
   }
   if (mountType == 2) { 
@@ -1205,11 +1446,11 @@ static void ideal_aa2rd(double alt, double az, long *rs, long *ds) {
       ha = fmod(az_norm + 180.0, 360.0);
       dec = 180.0 - alt;
     }
-    *ds = dec * 3600.0;
+    *dec_d = dec;
     double ra = lst() - (ha / 15.0);
     while (ra < 0) ra += 24.0;
     while (ra >= 24.0) ra -= 24.0;
-    *rs = ra * 3600.0;
+    *ra_h = ra;
     return;
   }
   double ar=alt*DEG_TO_RAD,zr=az*DEG_TO_RAD,lr=siteLat*DEG_TO_RAD;
@@ -1221,7 +1462,14 @@ static void ideal_aa2rd(double alt, double az, long *rs, long *ds) {
   if(sin(zr)>0)ha=360.0-ha;
   double ra=lst()-ha/15.0;
   if(ra<0)ra+=24.0; if(ra>=24)ra-=24.0;
-  *rs=(long)(ra*3600.0); *ds=(long)(dec*3600.0);
+  *ra_h = ra; *dec_d = dec;
+}
+
+// Meme chose en secondes d'AD et d'arc entieres (affichage, protocole LX200).
+static void ideal_aa2rd(double alt, double az, long *rs, long *ds) {
+  double ra, dec;
+  ideal_aa2rd_d(alt, az, &ra, &dec);
+  *rs = (long)(ra * 3600.0); *ds = (long)(dec * 3600.0);
 }
 
 static double getAstronomicalAlt(double ra, double dec) {
@@ -1441,6 +1689,7 @@ static void axesFromSteps() {
   noInterrupts();
   long aP = azPos, lP = altPos;
   interrupts();
+  aP -= pecOffsetSteps(aP);   // angle vrai de l'axe 1 (PEC)
   currAz=(double)aP/AZ_PPD;
   while(currAz<0)currAz+=360.0; while(currAz>=360)currAz-=360.0;
   currAlt=(double)lP/ALT_PPD;
@@ -1494,7 +1743,7 @@ static void updatePos() {
 static void changeMechanics() {
   double oldAzPPD = AZ_PPD, oldAltPPD = ALT_PPD;
   recalculatePPD();
-  if (AZ_PPD != oldAzPPD || ALT_PPD != oldAltPPD) pmClear();   // points mesures avec l'ancienne mecanique
+  if (AZ_PPD != oldAzPPD || ALT_PPD != oldAltPPD) { pmClear(); pecClear(); }   // mesures faites avec l'ancienne mecanique
   noInterrupts();
   azPos  = lround((double)azPos  * AZ_PPD  / oldAzPPD);
   altPos = lround((double)altPos * ALT_PPD / oldAltPPD);
@@ -1555,7 +1804,7 @@ static double wrap180(double a) {
 
 static double azAxisDeg() {
   long p = azPos;
-  return (double)p / AZ_PPD;
+  return (double)(p - pecOffsetSteps(p)) / AZ_PPD;
 }
 
 // Angle reel de l'axe 2 (sans le ramener a +-180), voir slewToAA().
@@ -1964,6 +2213,283 @@ void doTrackingISR() {
   inISR = false;
 }
 
+// ======================== PEC (erreur periodique de la vis) ========================
+// Une vis sans fin un peu voilee ou decentree fait avancer la roue trop vite puis
+// trop lentement, a chaque tour de vis : l'etoile oscille de quelques secondes a
+// quelques dizaines de secondes d'arc, toujours de la meme facon. On l'enregistre
+// une fois, pendant un tour de vis guide (PHD2, Ekos, Guidage de la carte du
+// ciel) : toutes les 50 ms, l'ecart entre l'axe 1 et la position qu'il aurait
+// avec le seul suivi (l'etoile du depart, sans guidage) est note, case par case
+// du tour de vis. C'est la correction reellement appliquee, quelle qu'en soit
+// la source : compter les impulsions :Mg ne suffisait pas, le suivi en defait
+// une partie pendant l'impulsion (banc d'essai : courbe 15 % trop grande et en
+// retard). Rejouee ensuite, la courbe corrige d'avance.
+//
+// Equatoriales seulement (l'axe 1 suit seul le ciel), et il faut connaitre le
+// nombre de dents de la roue de l'axe 1 (:XPW<n>#, 0 = pas de PEC) : un tour de
+// vis = 360 / dents degres d'axe. Sans capteur de repere, la position dans le
+// tour de vis est tiree du compteur de pas : elle reste juste tant que la
+// monture est eteinte parquee, comme le modele de pointage. Un :CS# (synchro qui
+// recale le compteur) deplace aussi l'origine pecRef, pour ne pas la perdre.
+//
+// Rejouer la courbe ne touche pas a la vitesse de l'ISR : elle corrige la lecture
+// de l'axe (angle vrai = (pas - courbe) / PPD), et le suivi, qui asservit cet
+// angle sur la cible, fait le reste. Positions, synchros et GoTo lisent ainsi le
+// meme angle corrige.
+//
+// Commandes OnStep (pilote INDI lx200_OnStep, onglet PEC), sans reponse :
+//   :$QZ+# lecture   :$QZ-# arret   :$QZ/# enregistrer   :$QZZ# effacer
+//   :$QZ!# ecrire en EEPROM ; :$QZ?# -> I/p/P/r/R# ; etat aussi dans :GU#.
+// Extensions GotoAndrivet : :XPW[n]# dents de la roue, :GXPE# bilan.
+#define PEC_BINS 256
+enum { PEC_OFF, PEC_PLAY, PEC_READY_REC, PEC_REC };
+static int16_t pecTable[PEC_BINS];      // correction en pas, au centre de chaque case
+static bool pecValid = false;           // courbe enregistree
+static bool pecPlayWanted = false;      // lecture demandee
+static uint8_t pecState = PEC_OFF;
+static long pecRef = 0;                 // pas de l'axe 1 au debut d'un tour de vis
+static double pecAcc[PEC_BINS];         // enregistrement : somme des ecarts (pas) par case
+static uint16_t pecCnt[PEC_BINS];       // nombre de mesures par case
+static long pecRecStart = 0;            // compteur de pas au debut de l'enregistrement
+static double pecRecRA = 0.0, pecRecDec = 0.0;   // etoile du depart (h, deg)
+static uint8_t pecRecProgress = 0;      // %
+static unsigned long pecLastMs = 0;
+
+static bool pecUsable() { return mountType != 0 && wormTeeth > 0; }
+static long pecWormSteps() {
+  if (!pecUsable()) return 0;
+  return lround(AZ_PPD * 360.0 / (double)wormTeeth);
+}
+static bool pecActive() { return pecUsable() && pecValid && pecState == PEC_PLAY; }
+
+// Changement d'etat. Quand la courbe se met a jouer (ou s'arrete), la lecture de
+// l'axe change d'un coup de la valeur de la courbe : le suivi repart de la
+// position ainsi relue. Sinon il gardait la cible recalee pendant
+// l'enregistrement guide, decalee de l'erreur de la vis a ce moment-la, et la
+// monture visait a cote d'autant (banc d'essai : 9").
+static void pecSetState(uint8_t st) {
+  bool was = pecActive();
+  pecState = st;
+  if (pecActive() != was && tracking) force_tracking_rebase = true;
+}
+
+// Position dans le tour de vis, en cases (0 .. PEC_BINS), a virgule.
+static double pecPhaseBins(long raw) {
+  long W = pecWormSteps();
+  if (W <= 0) return 0.0;
+  long p = (raw - pecRef) % W;
+  if (p < 0) p += W;
+  return (double)p * PEC_BINS / (double)W;
+}
+
+// Correction (pas) a la position brute raw : interpolee entre les centres de case.
+static long pecOffsetSteps(long raw) {
+  if (!pecActive()) return 0;
+  double x = pecPhaseBins(raw) - 0.5;
+  int i = (int)floor(x);
+  double f = x - i;
+  i = ((i % PEC_BINS) + PEC_BINS) % PEC_BINS;
+  int j = (i + 1) % PEC_BINS;
+  return lround(pecTable[i] + f * (pecTable[j] - pecTable[i]));
+}
+
+// Pente de la courbe (pas de correction par pas d'axe) : anticipation du suivi.
+static double pecSlope(long raw) {
+  if (!pecActive()) return 0.0;
+  long W = pecWormSteps();
+  double x = pecPhaseBins(raw) - 0.5;
+  int i = (int)floor(x);
+  i = ((i % PEC_BINS) + PEC_BINS) % PEC_BINS;
+  int j = (i + 1) % PEC_BINS;
+  return (double)(pecTable[j] - pecTable[i]) * PEC_BINS / (double)W;
+}
+
+static double pecAmplitudeArcsec() {
+  if (!pecValid) return 0.0;
+  int lo = pecTable[0], hi = pecTable[0];
+  for (int i = 1; i < PEC_BINS; i++) { if (pecTable[i] < lo) lo = pecTable[i]; if (pecTable[i] > hi) hi = pecTable[i]; }
+  return (double)(hi - lo) * 3600.0 / AZ_PPD;
+}
+
+static void pecSave() {
+  EEPROM.update(EEPROM_ADDR_PEC, 0);              // invalide pendant l'ecriture
+  eepromWrite(EEPROM_ADDR_PEC + 1, (int32_t)pecRef);   // 4 octets quelle que soit la taille de long
+  EEPROM.update(EEPROM_ADDR_PEC + 5, pecValid ? 1 : 0);
+  EEPROM.update(EEPROM_ADDR_PEC + 6, pecPlayWanted ? 1 : 0);
+  for (int i = 0; i < PEC_BINS; i++) eepromWrite(EEPROM_ADDR_PEC + 8 + 2 * i, pecTable[i]);
+  EEPROM.update(EEPROM_ADDR_PEC, EEPROM_PEC_MAGIC);
+}
+
+static void pecLoad(bool wasParked) {
+  pecValid = false; pecPlayWanted = false; pecState = PEC_OFF; pecRef = 0;
+  for (int i = 0; i < PEC_BINS; i++) pecTable[i] = 0;
+  if (EEPROM.read(EEPROM_ADDR_PEC) != EEPROM_PEC_MAGIC) return;
+  int32_t ref = 0;
+  eepromRead(EEPROM_ADDR_PEC + 1, ref);
+  pecRef = ref;
+  pecValid = (EEPROM.read(EEPROM_ADDR_PEC + 5) == 1);
+  for (int i = 0; i < PEC_BINS; i++) eepromRead(EEPROM_ADDR_PEC + 8 + 2 * i, pecTable[i]);
+  // Eteinte en marche, la monture ne sait plus ou elle en est dans le tour de
+  // vis : la courbe est gardee, mais la lecture attend un nouvel enregistrement
+  // ou un :$QZ+# explicite.
+  pecPlayWanted = wasParked && pecValid && (EEPROM.read(EEPROM_ADDR_PEC + 6) == 1);
+  if (pecPlayWanted && pecUsable()) pecState = PEC_PLAY;
+}
+
+// Mecanique changee (rapports, micro-pas, sens, type, dents) : courbe perdue.
+static void pecClear() {
+  for (int i = 0; i < PEC_BINS; i++) pecTable[i] = 0;
+  pecSetState(PEC_OFF); pecValid = false; pecPlayWanted = false; pecRecProgress = 0;
+  pecSave();
+}
+
+// Fin d'enregistrement : moyenne par case, derive lineaire retiree (mise en
+// station, vitesse : droite ajustee dans l'ordre parcouru), moyenne nulle,
+// lissage sur 5 cases. Une case sans mesure prend la valeur de ses voisines.
+static void pecFinishRecording(int dir) {
+  int b0 = (int)pecPhaseBins(pecRecStart);
+  double y[PEC_BINS];
+  for (int i = 0; i < PEC_BINS; i++) y[i] = pecCnt[i] ? pecAcc[i] / pecCnt[i] : NAN;
+  for (int i = 0; i < PEC_BINS; i++) {
+    if (!isnan(y[i])) continue;
+    int l = i, r = i;
+    for (int d = 1; d < PEC_BINS; d++) { l = (i - d + PEC_BINS) % PEC_BINS; if (pecCnt[l]) break; }
+    for (int d = 1; d < PEC_BINS; d++) { r = (i + d) % PEC_BINS; if (pecCnt[r]) break; }
+    y[i] = (pecCnt[l] && pecCnt[r]) ? 0.5 * (pecAcc[l] / pecCnt[l] + pecAcc[r] / pecCnt[r]) : 0.0;
+  }
+  double sk = 0.0, sy = 0.0, skk = 0.0, sky = 0.0;
+  for (int k = 0; k < PEC_BINS; k++) {
+    int b = ((b0 + dir * k) % PEC_BINS + PEC_BINS) % PEC_BINS;
+    sk += k; sy += y[b]; skk += (double)k * k; sky += k * y[b];
+  }
+  double n = PEC_BINS;
+  double m = (n * sky - sk * sy) / (n * skk - sk * sk);
+  double c0 = (sy - m * sk) / n;
+  double cum[PEC_BINS];
+  for (int k = 0; k < PEC_BINS; k++) {
+    int b = ((b0 + dir * k) % PEC_BINS + PEC_BINS) % PEC_BINS;
+    cum[b] = y[b] - (c0 + m * k);
+  }
+  long lim = 32000;
+  for (int i = 0; i < PEC_BINS; i++) {
+    double s = 0.0;
+    for (int d = -2; d <= 2; d++) s += cum[((i + d) % PEC_BINS + PEC_BINS) % PEC_BINS];
+    long v = lround(s / 5.0);
+    if (v > lim) v = lim;
+    if (v < -lim) v = -lim;
+    pecTable[i] = (int16_t)v;
+  }
+  pecValid = true;
+  pecPlayWanted = true;
+  pecSetState(PEC_PLAY);
+  pecRecProgress = 100;
+  pecSave();
+}
+
+// Boucle principale : enregistrement (toutes les 50 ms).
+static void pecService() {
+  if (millis() - pecLastMs < 50) return;
+  pecLastMs = millis();
+  if (!pecUsable()) {
+    if (pecState != PEC_OFF) pecSetState(PEC_OFF);
+    return;
+  }
+  noInterrupts();
+  long raw = azPos;
+  interrupts();
+  // Suivi sideral seulement : la Lune et le Soleil bougent, l'etoile de
+  // reference ne servirait plus de repere.
+  bool ok = tracking && !slewing && !alarmActive && trackRate == 0;
+  if (pecState == PEC_READY_REC) {
+    if (ok) {
+      for (int i = 0; i < PEC_BINS; i++) { pecAcc[i] = 0.0; pecCnt[i] = 0; }
+      pecRecStart = raw; pecRecProgress = 0;
+      axesFromSteps();
+      mach2rd_d(currAlt, currAz, &pecRecRA, &pecRecDec);
+      pecSetState(PEC_REC);
+    }
+    return;
+  }
+  if (pecState != PEC_REC) return;
+  if (!ok) {                       // GoTo, arret du suivi : enregistrement abandonne
+    pecSetState((pecValid && pecPlayWanted) ? PEC_PLAY : PEC_OFF);
+    pecRecProgress = 0;
+    return;
+  }
+  // Ou serait l'axe avec le seul suivi de l'etoile du depart ; l'ecart, c'est la
+  // correction apportee par le guidage (pas de courbe jouee pendant l'enregistrement).
+  double eAlt, eAz;
+  rd2mach_at(pecRecRA, pecRecDec, &eAlt, &eAz, 0.0);
+  double d = pmWrap((double)raw / AZ_PPD - eAz) * AZ_PPD;
+  int b = (int)pecPhaseBins(raw) % PEC_BINS;
+  pecAcc[b] += d;
+  if (pecCnt[b] < 65000) pecCnt[b]++;
+  long W = pecWormSteps();
+  long done = labs(raw - pecRecStart);
+  pecRecProgress = (uint8_t)((done >= W) ? 100 : (100 * done) / W);
+  if (done >= W) pecFinishRecording(raw >= pecRecStart ? 1 : -1);
+}
+
+// Etat pour :$QZ?# (OnStep : I ignore, p pret a lire, P lecture, r pret a
+// enregistrer, R enregistrement) et pour :GU# (caracteres OnStep).
+static char pecStatusQZ() {
+  if (!pecUsable()) return 'I';
+  switch (pecState) {
+    case PEC_PLAY:      return (tracking && !slewing) ? 'P' : 'p';
+    case PEC_READY_REC: return 'r';
+    case PEC_REC:       return 'R';
+    default:            return 'I';
+  }
+}
+static char pecStatusGU() {
+  switch (pecStatusQZ()) {
+    case 'p': return ',';
+    case 'P': return '~';
+    case 'r': return ';';
+    case 'R': return '^';
+    default:  return '/';
+  }
+}
+
+// :GXPE# -> "etat,dents,progression,amplitude#" : etat :$QZ?, dents de la roue,
+// avancement de l'enregistrement (%), amplitude crete a crete de la courbe (").
+static void pecReport(Print& out) {
+  out.write(pecStatusQZ()); out.write(',');
+  out.print((unsigned)wormTeeth); out.write(',');
+  out.print((int)pecRecProgress); out.write(',');
+  out.print(pecAmplitudeArcsec(), 1); out.write(',');
+  out.write(pecValid ? '1' : '0');
+  out.write('#');
+}
+
+// :$QZ<op>#
+static void pecCommand(char op, Print& out) {
+  switch (op) {
+    case '+':
+      pecPlayWanted = true;
+      if (pecUsable() && pecValid && pecState != PEC_REC && pecState != PEC_READY_REC) pecSetState(PEC_PLAY);
+      pecSave();
+      break;
+    case '-':
+      pecPlayWanted = false;
+      if (pecState == PEC_PLAY) pecSetState(PEC_OFF);
+      pecSave();
+      break;
+    case '/':
+      if (pecUsable()) { pecSetState(PEC_READY_REC); pecRecProgress = 0; }
+      break;
+    case 'Z':
+      pecClear();
+      break;
+    case '!':
+      pecSave();
+      break;
+    case '?':
+      out.write(pecStatusQZ()); out.write('#');
+      break;
+  }
+}
+
 // Fin de GoTo : le suivi repart de zero sur la nouvelle cible. doTrack() ne
 // tourne pas pendant le GoTo (boucle bloquante) : il gardait sinon jusqu'a 5 s
 // la base de calcul de l'ancienne cible, et l'ISR sa vitesse jusqu'a 200 ms,
@@ -2011,7 +2537,7 @@ static void doTrack() {
 
   if(trkStartLST == 0.0 || force_tracking_rebase) {
     if (force_tracking_rebase) {
-      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
+      trkHere();
     }
     trkStartLST = lst();
     lastAzStepUs = micros();
@@ -2035,7 +2561,7 @@ static void doTrack() {
     if (!busy) {
       guiding = false;
       updatePos();
-      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
+      trkHere();
       last_full_trig_ms = 0;   // force le recalcul de trk_base / trk_speed
     }
   }
@@ -2110,8 +2636,11 @@ static void doTrack() {
   double steps_per_sec_az = (trk_speed_az * AZ_PPD) / 3600.0;
   double steps_per_sec_alt = (trk_speed_alt * ALT_PPD) / 3600.0;
   
-  double liveAz = (double)azPos / AZ_PPD;
+  long rawAz = azPos;
+  double liveAz = (double)(rawAz - pecOffsetSteps(rawAz)) / AZ_PPD;   // angle vrai (PEC)
   double liveAlt = (double)altPos / ALT_PPD;
+  // PEC : la courbe varie avec la position, la vitesse d'axe aussi (anticipation).
+  steps_per_sec_az *= 1.0 + pecSlope(rawAz);
   
   double azD = tZ - liveAz;
   if(azD>180.0)azD-=360.0; if(azD<-180.0)azD+=360.0;
@@ -2234,6 +2763,13 @@ static void sendGU(Print& out) {
   }
   // 't' = compensation complete (refraction) pour le driver INDI, qui l'affiche.
   if (refractionOn) out.write('t');
+  // PEC, caracteres OnStep (equatoriales) : '/' ignore, ',' pret a lire, '~'
+  // lecture, ';' pret a enregistrer, '^' enregistrement, 'R' courbe enregistree.
+  // Le driver INDI y lit l'etat de son onglet PEC.
+  if (mountType != 0) {
+    out.write(pecStatusGU());
+    if (pecValid) out.write('R');
+  }
   // Extension GotoAndrivet : heure non reglee. Volontairement hors convention
   // OnStep (le driver l'ignore) et place AVANT les chiffres de queue, pour ne
   // pas etre relu comme code d'erreur. goto_andrivet.py cherche ce caractere.
@@ -2291,11 +2827,20 @@ static void handleGX(const char* cmd, Print& out) {
   // Les vraies limites d'axes ne passent pas par ici : elles sont servies par
   // :Gh# et :Go#, que le driver interroge effectivement. Rien dans le projet
   // n'interrogeait :GX9B/9C/9D, ces valeurs n'etaient donc lues que par Ekos.
-  if(g1=='9'&&g2=='A'){ out.print(F("0#"));   return; }   // temperature
-  if(g1=='9'&&g2=='B'){ out.print(F("0#"));   return; }   // barometre
-  if(g1=='9'&&g2=='C'){ out.print(F("0#"));   return; }   // humidite
+  // Une fois donnees par :SX9A/9B/9C, ce sont ces valeurs qui sont rendues.
+  if(g1=='9'&&g2=='A'){ if(weatherTSet){ out.print(refrTempC,1); out.write('#'); } else out.print(F("0#")); return; }
+  if(g1=='9'&&g2=='B'){ if(weatherPSet){ out.print(refrPressHpa,1); out.write('#'); } else out.print(F("0#")); return; }
+  if(g1=='9'&&g2=='C'){ if(weatherHSet){ out.print(weatherHum,0); out.write('#'); } else out.print(F("0#")); return; }
   if(g1=='9'&&g2=='D'){ out.print(F("0#"));   return; }   // inutilise du driver
-  if(g1=='9'&&g2=='E'){ out.print(F("0#"));   return; }   // point de rosee
+  if(g1=='9'&&g2=='E'){                                     // point de rosee (Magnus)
+    if(weatherTSet && weatherHSet && weatherHum > 0.0){
+      double g = log(weatherHum / 100.0) + 17.62 * refrTempC / (243.12 + refrTempC);
+      double dp = 243.12 * g / (17.62 - g);
+      if (dp < 0.0) dp = 0.0;                             // plage declaree du driver : 0..100
+      out.print(dp,1); out.write('#');
+    } else out.print(F("0#"));
+    return;
+  }
   // :GX9F# -> WEATHER_CPU_TEMPERATURE. Le driver documente -274 comme valeur
   // "non lue" ; on renvoyait maxSlewRate, affiche tel quel en degres.
   if(g1=='9'&&g2=='F'){ out.print(F("-274#")); return; }
@@ -2318,6 +2863,10 @@ static void handleGX(const char* cmd, Print& out) {
   if(g1=='E'&&g2=='F'){ out.write('0'); return; }
   // :GXE6# : pas par seconde de l'axe 1 au suivi sideral (lu par le pilote ASCOM).
   if(g1=='E'&&g2=='6'){ out.print(AZ_PPD * 15.041067 / 3600.0, 6); out.write('#'); return; }
+  // :GXMS# (extension GotoAndrivet) : bilan du modele de pointage, voir pmReport().
+  if(g1=='M'&&g2=='S'){ pmReport(out); return; }
+  // :GXPE# (extension GotoAndrivet) : etat du PEC, voir pecReport().
+  if(g1=='P'&&g2=='E'){ pecReport(out); return; }
   if(g1=='E'){ out.print(F("0#")); return; }
   if(g1=='F'){ out.print(F("20.0#")); return; }
   out.print(F("0#"));
@@ -2716,14 +3265,32 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   }
 
   if(c1=='C'&&c2=='M'&&c3=='L'){
+    if (slewing) { out.print(F("0#")); return; }
     pmClear();
     out.print(F("Model Cleared#")); return;
+  }
+  // :CMU# (extension GotoAndrivet) : retire la derniere synchro du modele, par
+  // exemple apres avoir centre la mauvaise etoile. La monture ne bouge pas : sa
+  // position se relit avec le modele sans ce point. "1#" retire, "0#" plus rien.
+  if(c1=='C'&&c2=='M'&&c3=='U'){
+    if (numSyncPoints == 0 || slewing) { out.print(F("0#")); return; }
+    pmRemoveAt(numSyncPoints - 1);
+    pmFromMemory = false; pmSuspectArmed = false;
+    pmFit();
+    pmSave();
+    updatePos();
+    trkHere();
+    if (tracking) force_tracking_rebase = true;
+    out.print(F("1#")); return;
   }
   if(c1=='C'&&c2=='M'){
     // Reponse OnStep (driver INDI lx200_OnStep) : "N/A#" = sync faite,
     // "E<chiffre>#" = refus. Toute autre reponse donne dans Ekos
     // "Unexpected return on sync call!" et fait echouer l'alignement.
     if(!timeSet) { out.print(F("E9#")); return; }   // 9 = erreur non precisee (heure non reglee)
+    // Pendant un GoTo (commande servie par la boucle du GoTo), la monture est
+    // entre deux positions : le point serait faux. Refus comme OnStep (E5).
+    if(slewing) { out.print(F("E5#")); return; }
     double ra_h=inRA/3600.0, dec_d=inDEC/3600.0;
     if (syncNearPole(dec_d)) { out.print(F("E6#")); return; }
     
@@ -2734,43 +3301,58 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     double mach_az_norm = fmod(currAz, 360.0);
     if(mach_az_norm < 0) mach_az_norm += 360.0;
 
+    // Ecart entre la position de la monture et celle que le modele attend pour
+    // cette etoile (deg, sur le ciel).
+    double da, de;
+    pmCorr(ideal_az, ideal_alt, &da, &de);
+    double ea = pmWrap(mach_az_norm - ideal_az - da) * cos(currAlt * DEG_TO_RAD);
+    double ee = pmWrap(currAlt - ideal_alt - de);
+    double err = sqrt(ea * ea + ee * ee);
+    if (numSyncPoints == 0) err = 0.0;
+
     // Premier sync apres un redemarrage, avec le modele garde en memoire : s'il
     // s'en ecarte de plus de PM_REUSE_MAX, la monture a ete remontee, deplacee
     // ou a perdu sa position. L'ancien modele est efface avant d'ajouter ce point.
     if (pmFromMemory) {
       pmFromMemory = false;
-      double da, de;
-      pmCorr(ideal_az, ideal_alt, &da, &de);
-      double ea = pmWrap(mach_az_norm - ideal_az - da) * cos(currAlt * DEG_TO_RAD);
-      double ee = currAlt - ideal_alt - de;
-      if (sqrt(ea * ea + ee * ee) > PM_REUSE_MAX) pmClear();
+      if (err > PM_REUSE_MAX) { pmClear(); err = 0.0; }
     }
 
     int foundIdx = -1;
     for(int i=0; i<numSyncPoints; i++) {
-        double d_alt = ideal_alt - syncPoints[i].ideal_alt;
-        double d_az = ideal_az - syncPoints[i].ideal_az;
-        if(d_az > 180.0) d_az -= 360.0;
-        if(d_az < -180.0) d_az += 360.0;
-        if(d_alt*d_alt + d_az*d_az < 0.0001) {
+        if (pmDist(ideal_az, ideal_alt, syncPoints[i].ideal_az, syncPoints[i].ideal_alt) < 0.01) {
             foundIdx = i;
             break;
         }
     }
-    
-    if (foundIdx >= 0) {
-        // Met à jour le point existant
-        syncPoints[foundIdx].mach_az = mach_az_norm;
-        syncPoints[foundIdx].mach_alt = currAlt;
-    } else {
-        // Ajoute un nouveau point
-        syncPoints[syncIndex].ideal_az = ideal_az;
-        syncPoints[syncIndex].ideal_alt = ideal_alt;
-        syncPoints[syncIndex].mach_az = mach_az_norm;
-        syncPoints[syncIndex].mach_alt = currAlt;
-        syncIndex = (syncIndex + 1) % MAX_SYNC_POINTS;
-        if (numSyncPoints < MAX_SYNC_POINTS) numSyncPoints++;
+
+    // Synchro suspecte : le modele (3 points ou plus) attendait la monture
+    // ailleurs, de beaucoup plus que son ecart habituel. Le plus souvent, ce
+    // n'est pas l'etoile demandee qui est centree : refusee, rien ne change.
+    // Refaite au meme endroit, c'est que la monture a bouge (choc, embrayage) :
+    // l'ancien modele est efface et l'on repart de cette etoile.
+    if (foundIdx < 0 && numSyncPoints >= 3) {
+      double lim = PM_OUTLIER_MIN;
+      if (pmRms > 0.0 && 5.0 * pmRms > lim) lim = 5.0 * pmRms;
+      if (err > lim) {
+        if (pmSuspectArmed && pmDist(ideal_az, ideal_alt, pmSuspectAz, pmSuspectAlt) < PM_OUTLIER_SAME) {
+          pmClear();
+        } else {
+          pmSuspectArmed = true; pmSuspectAz = ideal_az; pmSuspectAlt = ideal_alt;
+          pmLastErr = err;
+          // E9 pour INDI ("Unspecified Error") ; apres la virgule, l'ecart en deg
+          // pour les applis GotoAndrivet (carte du ciel, raquette).
+          out.print(F("E9,")); out.print(err, 1); out.write('#');
+          return;
+        }
+      }
     }
+    pmSuspectArmed = false;
+    pmLastErr = err;
+
+    // Meme etoile qu'un point existant : il est remplace et devient le plus recent.
+    if (foundIdx >= 0) pmRemoveAt(foundIdx);
+    pmAppend(ideal_az, ideal_alt, mach_az_norm, currAlt);
     
     pmFit();
     pmSave();
@@ -2785,14 +3367,22 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
   // OnStep synchronise par :CS# et ne lit rien : le "N/A#" renvoye restait dans son
   // tampon et decalait les reponses suivantes. :CM# repond toujours "N/A#".
   if(c1=='C'&&c2=='S'){
-    if(!timeSet) return;
+    if(!timeSet || slewing) return;
     double ra_h=inRA/3600.0, dec_d=inDEC/3600.0;
     if (syncNearPole(dec_d)) return;
     // Position machine AVEC le modele de pointage, comme le suivi (rd2mach) : avec
     // ideal_rd2aa_at (sans modele), le suivi visait ensuite une autre position et la
     // monture glissait de l'ecart du modele juste apres la synchronisation.
     rd2mach(ra_h,dec_d,&currAlt,&currAz);
-    azPos=azPosFromAz(currAz); altPos=(long)(currAlt*ALT_PPD);
+    {
+      // Le compteur de l'axe 1 est recale : l'origine du tour de vis (PEC) le suit,
+      // la vis, elle, n'a pas tourne.
+      long oldRaw = azPos;
+      long newRaw = azPosFromAz(currAz) + pecOffsetSteps(oldRaw);
+      pecRef += newRaw - oldRaw;
+      azPos = newRaw;
+    }
+    altPos=(long)(currAlt*ALT_PPD);
     currRA=inRA; currDEC=inDEC;
     setTrk(ra_h, dec_d);
     synced=true; updatePos();
@@ -2820,6 +3410,17 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     }
   }
   
+  // :XPW[n]# (extension GotoAndrivet) : dents de la roue de l'axe 1, pour le PEC
+  // (0 = pas de PEC, jusqu'a 2000). Lecture sans valeur. Changer la valeur efface
+  // la courbe enregistree.
+  if(c1=='X'&&c2=='P'&&c3=='W'){
+    if(ci==4) { out.print((unsigned)wormTeeth); out.write('#'); return; }
+    long v = atol(cmd+4);
+    if(v < 0 || v > 2000) { out.print(F("0#")); return; }
+    if((uint16_t)v != wormTeeth) { wormTeeth = (uint16_t)v; pecClear(); }
+    saveStateToEEPROM();
+    out.print(F("1#")); return;
+  }
   if(c1=='X'&&c2=='B'){
     if(c3=='z') { backlashAz=atoi(cmd+4); saveStateToEEPROM(); out.write('1'); return; }
     if(c3=='a') { backlashAlt=atoi(cmd+4); saveStateToEEPROM(); out.write('1'); return; }
@@ -2899,7 +3500,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     // trkRA est la cible du GoTo : on n'y touche pas.
     if (!tracking && !slewing) {
       updatePos();
-      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
+      trkHere();
     }
     tracking=true; parked=false; enableMotors(true);
     out.write('1'); return;
@@ -2934,7 +3535,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     // trkRA est la cible du GoTo : on n'y touche pas.
     if (!tracking && !slewing) {
       updatePos();
-      setTrk((double)currRA / 3600.0, (double)currDEC / 3600.0);
+      trkHere();
     }
     tracking=true; parked=false; enableMotors(true);
     saveStateToEEPROM(); return;
@@ -3021,7 +3622,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
         parkAlt = homeAlt(newType);
         parkAz  = homeAz(newType);
       }
-      if (newType != mountType) { mountType = newType; pmClear(); }
+      if (newType != mountType) { mountType = newType; pmClear(); pecClear(); }
       saveStateToEEPROM();
       out.print(F("1#")); return;
     } else {
@@ -3051,7 +3652,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     if(ci>=5) {
       bool rev = (cmd[4]=='1');
       bool &r = (c3=='a') ? azReversed : altReversed;
-      if ((c3=='a' || c3=='e') && rev != r) { r = rev; pmClear(); }
+      if ((c3=='a' || c3=='e') && rev != r) { r = rev; pmClear(); if (c3=='a') pecClear(); }
       saveStateToEEPROM();
       out.print(F("1#")); return;
     } else {
@@ -3133,6 +3734,7 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     noInterrupts();
     long aP = azPos, lP = altPos;
     interrupts();
+    aP -= pecOffsetSteps(aP);
     double pAz  = fmod((double)aP / AZ_PPD, 360.0);
     if (pAz < 0.0) pAz += 360.0;
     double pAlt = (double)lP / ALT_PPD;
@@ -3216,6 +3818,15 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     // decalees. Les applis GotoAndrivet acceptent les deux formes.
     out.write('1'); return;
   }
+  // :SX9A,<t># temperature (deg C), :SX9B,<p># pression (hPa), :SX9C,<h>#
+  // humidite (%), comme OnStep. '1' = accepte, '0' = hors plage. Le pilote INDI
+  // les envoie sans lire la reponse et vide le tampon ensuite.
+  if(c1=='S'&&c2=='X'&&cmd[3]=='9'&&ci>=7&&cmd[5]==','){
+    double v = atof(cmd+6);
+    if(cmd[4]=='A'){ if(v<-60.0||v>60.0){ out.write('0'); return; } refrTempC=v; weatherTSet=true; out.write('1'); return; }
+    if(cmd[4]=='B'){ if(v<500.0||v>1100.0){ out.write('0'); return; } refrPressHpa=v; weatherPSet=true; out.write('1'); return; }
+    if(cmd[4]=='C'){ if(v<0.0||v>100.0){ out.write('0'); return; } weatherHum=v; weatherHSet=true; out.write('1'); return; }
+  }
   if(c1=='S'&&c2=='X'){ out.write('1'); return; }
   if(c1=='S'&&(c2=='h'||c2=='o')){ out.write('1'); return; }
   if(c1=='S'&&(c2=='M'||c2=='N'||c2=='O'||c2=='P')){ out.write('1'); return; }
@@ -3251,6 +3862,8 @@ static void processCmd(const char* cmd, uint8_t ci, Print& out) {
     saveStateToEEPROM();
     out.write('1'); return;
   }
+  // PEC, commandes OnStep : voir pecCommand(). Sans reponse, sauf :$QZ?#.
+  if(c1=='$' && c2=='Q' && c3=='Z' && ci>=5){ pecCommand(cmd[4], out); return; }
   if(c1=='$'||c1=='%'){ out.print(F("0#")); return; }
   if(c1=='B'&&(c2=='+'||c2=='-')){ return; }
   if(c1=='U'&&ci==2){ return; }
@@ -3614,6 +4227,7 @@ void loop() {
 
   
   doTrack();
+  pecService();
   updateBuzzer();
 
   // Handle Derotator

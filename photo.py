@@ -917,9 +917,14 @@ class PhotoWindow(tk.Toplevel):
 
     def _sync(self, sol, err_arcmin):
         """Synchronise la monture sur la position résolue : un point de plus dans le modèle du firmware."""
-        self.app.photo_sync(sol["ra_h"], sol["dec_d"])
+        r = self.app.photo_sync(sol["ra_h"], sol["dec_d"])
         if self.camera.simulated:
             self.camera.synced()
+        if r == "RESET":                     # la monture avait bougé : le firmware repart de ce point
+            self.synced_pts.clear()
+        elif r not in ("OK", None):          # refusée (GoTo en cours, près du pôle, heure...) : pas de point
+            self._ui(lambda: self._status(f"Sync → {r}"))
+            return
         az, alt = self.app.photo_radec_to_altaz(sol["ra_h"], sol["dec_d"])
         self.synced_pts.append((az, alt, err_arcmin))
         self._ui(self._model_list)

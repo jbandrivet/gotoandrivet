@@ -176,6 +176,7 @@ Le projet vous permet de choisir le cerveau principal de la monture. Bien que le
 | **Précision (Maths)** | Flottants 32-bit lents | **Flottants 64-bit (double)** natifs ultra-rapides |
 | **Microstepping & Vitesse max**| Limité (saturera à très haut microstepping) | **Parfait** (génère des impulsions à plus de 200kHz sans sourciller) |
 | **Modèle de pointage** | Synchro à une étoile | **Défauts de la monture** calculés sur 50 étoiles au plus |
+| **PEC (erreur périodique de la vis)** | Non | **Oui** (équatoriales) |
 | **Evolutivité (Futur)** | Faible | **Très haute** (Port USB Host pour Manette/Gamepad) |
 | **Coût** | ~15-20€ (Clones pas chers) | ~35-40€ |
 
@@ -208,10 +209,11 @@ Pour monter votre système GotoAndrivet, les composants matériels suivants sont
 
 ## Fonctionnalités Avancées
 
-* **Modèle de pointage (Teensy Monture uniquement)** : à partir de 50 étoiles de synchro au plus, la carte calcule les défauts de la monture (décalage des axes, mise en station, tube pas d'équerre, axes pas perpendiculaires, flexion), puis interpole ce qui reste pour tomber juste sur chaque étoile. Le modèle est gardé en mémoire d'une soirée à l'autre si la monture est éteinte parquée. Remise à zéro par `:CML#` (bouton « Effacer le modèle » du module caméra).
+* **Modèle de pointage (Teensy Monture uniquement)** : à partir de 50 étoiles de synchro au plus, la carte calcule les défauts de la monture (décalage des axes, mise en station, tube pas d'équerre, axes pas perpendiculaires, flexion du tube et de la fourche, roues décentrées), puis interpole ce qui reste pour tomber juste sur chaque étoile. Une synchro sur la mauvaise étoile est refusée (refaite, elle est acceptée et le modèle repart de zéro) ; la dernière étoile se retire (`:CMU#`). L'onglet *Précision* de la carte du ciel et la raquette affichent le nombre d'étoiles, l'erreur restante et l'erreur de mise en station. Le modèle est gardé en mémoire d'une soirée à l'autre si la monture est éteinte parquée. Remise à zéro par `:CML#`. Détails : fiche technique, § 5.
+* **PEC (Teensy Monture, équatoriales)** : l'erreur périodique de la vis s'enregistre pendant un tour de vis guidé, puis se corrige d'avance (commandes OnStep, onglet *PEC* d'Ekos compris). Il faut indiquer le nombre de dents de la roue AD dans le configurateur.
 * **Suivi de la Lune et du Soleil calculé** (les deux cartes) : position de l'astre recalculée en continu, en ascension droite et en déclinaison.
 * **Compatible INDI et ASCOM** (les deux cartes) : testé le 18/11/2026 avec un vrai Teensy, sous Linux avec le pilote INDI *LX200 OnStep* (Ekos) et sous Windows avec NINA et le pilote *ASCOM OnStep* : GoTo des deux côtés du pilier, guidage, synchronisation, Lune/Soleil/sidéral, jeu, arrêt, parking.
-* **Réfraction corrigée** (les deux cartes) : au GoTo et au suivi, réglable depuis Ekos (*Compensation*, `:To#` / `:Tn#`).
+* **Réfraction corrigée** (les deux cartes) : au GoTo et au suivi, réglable depuis Ekos (*Compensation*, `:To#` / `:Tn#`). Sur la Teensy, avec la température et la pression du lieu (`:SX9A` / `:SX9B`, envoyées par la carte du ciel et par Ekos).
 * **GoTo anticipé** (les deux cartes) : la carte vise l'endroit où sera l'objet à l'arrivée.
 * **Ajout du type de monture `GermanEq`** : Le firmware de l'Arduino Mega calcule automatiquement les inversions d'axes (Ascension Droite et Déclinaison) lors du franchissement du méridien.
 * **Commande standard `:Gm#` implémentée** : Renvoie le *Pier Side* (`E#` pour l'Est, `W#` pour l'Ouest, `N#` pour les autres modes) requis pour les logiciels de guidage comme Ekos/INDI.

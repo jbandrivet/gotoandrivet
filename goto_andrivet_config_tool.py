@@ -58,6 +58,7 @@ DEFAULTS = {
     "rev_alt": False,
     "park_alt": 0.0,
     "park_az": 0.0,
+    "worm_teeth": 0,
     # Drivers TMC5160 en SPI (firmware Teensy uniquement)
     "tmc_spi": True,
     "tmc_current": [800, 800, 400, 400],   # mA RMS : AZ, ALT, DEROT, FOCUS
@@ -132,6 +133,8 @@ TRANSLATIONS = {
         "microstepping": "Microstepping:",
         "gear_ratio_az": "AZ/RA Gear Ratio:",
         "gear_ratio_alt": "ALT/DEC Ratio:",
+        "worm_teeth": "RA wheel teeth:",
+        "worm_teeth_note": "for PEC, equatorial only (0 = no PEC)",
         "latitude": "Site Latitude (N):",
         "longitude": "Longitude (E):",
         "park_pos": "Park Position:",
@@ -202,6 +205,8 @@ TRANSLATIONS = {
         "microstepping": "Microstepping :",
         "gear_ratio_az": "Rapport AZ/RA :",
         "gear_ratio_alt": "Rapport DEC/ALT :",
+        "worm_teeth": "Dents roue AD :",
+        "worm_teeth_note": "pour le PEC, équatoriales seulement (0 = pas de PEC)",
         "latitude": "Latitude du Site (N) :",
         "longitude": "Longitude (E) :",
         "park_pos": "Position Parking :",
@@ -571,6 +576,17 @@ class ConfigToolApp(tk.Tk):
         self.gear_alt_entry = tk.Entry(row_gear, width=12, bd=2, relief="sunken", font=f_entry, bg="white", fg="black")
         self.gear_alt_entry.insert(0, str(self.settings["gear_ratio_alt"]))
         self.gear_alt_entry.pack(side="left", padx=5)
+
+        # Dents de la roue de l'axe AD : longueur d'un tour de vis, pour le PEC (firmware Teensy)
+        row_worm = tk.Frame(form_inner, bg="#c0c0c0")
+        row_worm.pack(fill="x", pady=6)
+        self.lbl_worm = tk.Label(row_worm, text="Dents roue AD :", width=20, anchor="w", bg="#c0c0c0", fg="black", font=f_label)
+        self.lbl_worm.pack(side="left")
+        self.worm_entry = tk.Entry(row_worm, width=8, bd=2, relief="sunken", font=f_entry, bg="white", fg="black")
+        self.worm_entry.insert(0, str(self.settings.get("worm_teeth", 0)))
+        self.worm_entry.pack(side="left", padx=5)
+        self.lbl_worm_note = tk.Label(row_worm, text="", anchor="w", bg="#c0c0c0", fg="#404040", font=f_label)
+        self.lbl_worm_note.pack(side="left", padx=5)
 
         # Configuration Row 2.5: Park Position
         row_park = tk.Frame(form_inner, bg="#c0c0c0")
@@ -1024,6 +1040,8 @@ class ConfigToolApp(tk.Tk):
         self.lbl_microstepping.config(text=t["microstepping"])
         self.lbl_gear_az.config(text=t["gear_ratio_az"])
         self.lbl_gear_alt.config(text=t["gear_ratio_alt"])
+        self.lbl_worm.config(text=t["worm_teeth"])
+        self.lbl_worm_note.config(text=t["worm_teeth_note"])
         self.lbl_latitude.config(text=t["latitude"])
         self.lbl_longitude.config(text=t["longitude"])
         self.lbl_park.config(text=t["park_pos"])
@@ -1816,6 +1834,9 @@ print(json.dumps(res))
                 park_alt_raw = self.ser.read_until(b"#").decode('ascii', errors='ignore').strip('#')
                 self.ser.write(b":GQz#")
                 park_az_raw = self.ser.read_until(b"#").decode('ascii', errors='ignore').strip('#')
+                # Dents de la roue AD (PEC, firmware Teensy ; la Mega repond "0#")
+                self.ser.write(b":XPW#")
+                worm_raw = self.ser.read_until(b"#").decode('ascii', errors='ignore').strip('#')
 
                 # Drivers TMC5160 (Teensy)
                 tmc_state = self._tmc_status()
@@ -1904,6 +1925,9 @@ print(json.dumps(res))
                             self.park_az_entry.delete(0, tk.END)
                             self.park_az_entry.insert(0, v)
                         except: pass
+                    if worm_raw.isdigit():
+                        self.worm_entry.delete(0, tk.END)
+                        self.worm_entry.insert(0, worm_raw)
                     self.apply_hardware_constraints()   # ex. PCB drivers externes : SPI coupé
 
                 self.after(0, _update_ui)
@@ -2548,6 +2572,9 @@ finally:
             rev_alt = self.rev_alt_var.get()
             p_alt = float(self.park_alt_entry.get())
             p_az = float(self.park_az_entry.get())
+            worm = int(self.worm_entry.get() or 0)
+            if not (0 <= worm <= 2000):
+                raise ValueError
         except ValueError:
             messagebox.showerror("Input Error", "Please enter valid numerical values for gear ratios and coordinates.")
             return
@@ -2627,6 +2654,10 @@ finally:
             self.ser.write(f":BPz{p_az}#".encode('ascii'))
             self.ser.read_until(b"#")
 
+            # Dents de la roue AD (PEC). Changer la valeur efface la courbe enregistree.
+            self.ser.write(f":XPW{worm}#".encode('ascii'))
+            self.ser.read_until(b"#")
+
             # Focuseur pilote par la monture (sans :XFe1, le firmware ignore :XF+/:XF-)
             self.ser.write(f":XFe{1 if self.focus_mega_var.get() else 0}#".encode('ascii'))
             self.ser.read(1)
@@ -2664,6 +2695,7 @@ finally:
             self.settings["rev_alt"] = rev_alt
             self.settings["park_alt"] = p_alt
             self.settings["park_az"] = p_az
+            self.settings["worm_teeth"] = worm
             self.settings["focus_mega_en"] = self.focus_mega_var.get()
             self.settings["focus_eaf_en"] = self.focus_eaf_var.get()
             self.settings["derot_mega_en"] = self.derot_mega_var.get()

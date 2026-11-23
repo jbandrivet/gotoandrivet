@@ -109,6 +109,9 @@ FONCTIONS = (
      "Même monture, mêmes firmwares, mise à jour d'un clic sur les deux."),
     ("▣", "Deux firmwares", "Arduino Mega 2560 ou Teensy 4.1, protocole LX200/OnStep compatible avec KStars, Ekos et INDI "
      "sous Linux, NINA et ASCOM sous Windows, PHD2 sur les deux."),
+    ("◇", "Pointage précis (Teensy)", "Modèle de pointage jusqu'à 50 étoiles, qui mesure la mise en station et refuse "
+     "une synchro sur la mauvaise étoile ; réfraction selon la météo ; PEC : l'erreur de la vis s'enregistre une fois, "
+     "puis se corrige d'avance."),
     ("☰", "Raquette physique", "Teensy 4.1 et écran 20 × 4 : catalogues, GoTo, parking, suivi, sans ordinateur."),
     ("⚙", "Configurateur", "Rapports d'engrenage, micro-pas, vitesses, type de monture, et flashage des cartes "
      "sans l'IDE Arduino."),

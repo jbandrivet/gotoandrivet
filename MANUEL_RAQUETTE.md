@@ -17,7 +17,7 @@ Depuis cet écran d'accueil :
 
 ## Le Menu Principal
 
-En appuyant sur `Entrée` depuis l'écran d'accueil, vous accédez aux 15 options suivantes :
+En appuyant sur `Entrée` depuis l'écran d'accueil, vous accédez aux options suivantes :
 
 ### 1. Catalogues
 Permet d'accéder aux catalogues d'objets célestes (Messier, NGC, IC, Système Solaire, Étoiles remarquables). Sélectionnez un catalogue, puis un objet, et faites Entrée pour lancer le **GoTo** automatique vers cet objet.
@@ -34,6 +34,8 @@ Active ou désactive les bips de confirmation de la raquette.
 
 ### 5. Synchroniser
 Procédure d'alignement. Après avoir lancé un GoTo vers une étoile ou une planète, centrez-la parfaitement à l'aide des touches fléchées puis utilisez cette fonction. L'Arduino va alors se "synchroniser" et considérer que sa position mécanique actuelle correspond exactement à cet objet.
+
+L'écran confirme la synchro avec le nombre d'étoiles du modèle et l'erreur restante (monture Teensy). Si la monture la refuse, il dit pourquoi : *GOTO EN COURS*, *TROP PRES DU POLE*, *HEURE NON REGLEE*, ou *REFUSEE : a 3.1 deg*. Ce dernier cas veut dire que la monture pointe loin de l'endroit où le modèle l'attend : ce n'est sans doute pas la bonne étoile qui est centrée. Si c'est bien la bonne (la monture a été bougée), refaites la synchro : elle est acceptée et le modèle repart de zéro.
 
 ### 6. Parking
 Gère la mise au repos de la monture.
@@ -71,3 +73,14 @@ Active ou désactive la synchronisation automatique de l'heure et du lieu grâce
 Permet de choisir ce que l'écran d'accueil affiche en temps réel :
 - Coordonnées équatoriales (Ascension Droite et Déclinaison).
 - Coordonnées horizontales (Altitude et Azimut).
+
+### 16. Modèle Pointage (monture Teensy)
+Bilan du modèle de pointage, relu toutes les 2 secondes :
+- nombre d'étoiles et erreur restante (en minutes d'arc) ;
+- en équatoriale, l'erreur de mise en station : *Pole haut 12' O 5'* veut dire axe polaire trop haut de 12′ et trop à l'ouest de 5′ ; en alt-az, le calage : *Calage 8' vers NE* veut dire que l'axe vertical penche de 8′ vers le nord-est.
+- **Entrée** retire la dernière étoile synchronisée (par exemple après avoir centré la mauvaise). La monture ne bouge pas.
+
+### 17. PEC (monture Teensy, équatoriales)
+Correction de l'erreur périodique de la vis sans fin. L'écran donne l'état (lecture, arrêtée, enregistrement en %, pas de courbe), l'amplitude corrigée et le nombre de dents de la roue AD (à régler dans le configurateur).
+- **Haut** lance l'enregistrement : le guidage doit tourner et être stable, en suivi sidéral. Il dure un tour de vis (10 min pour une roue de 144 dents), sans GoTo.
+- **Entrée** lance ou arrête la lecture de la courbe.

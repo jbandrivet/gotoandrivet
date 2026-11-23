@@ -498,7 +498,7 @@ class Mount:
                 self._ser.reset_input_buffer()
                 self._ser.write((cmd+"#").encode())
                 if not reply: return ""
-                if cmd.startswith((":Sr", ":Sd", ":St", ":Sg", ":SG", ":SL", ":SC", ":Bv", ":BV", ":U", ":Rg", ":hQ")):
+                if cmd.startswith((":Sr", ":Sd", ":St", ":Sg", ":SG", ":SL", ":SC", ":Bv", ":BV", ":U", ":Rg", ":hQ", ":SX")):
                     return self._ser.read(1).decode(errors='replace').strip()
                 r=b""; dl=time.time()+self.cfg.get("mount_timeout",0.5)
                 while time.time()<dl:
@@ -689,11 +689,65 @@ class Mount:
             log.warning("Sync refusée : régler date/heure d'abord")
             return ""
         ra, dec = Astro.precess(ra, dec)
-        self._cmd(f":Sr{Astro.fmt_ra_lx(ra)}", reply=False)
-        self._cmd(f":Sd{Astro.fmt_dec_lx(dec)}", reply=False)
+        # Réponses lues ('1') : non lues, elles pouvaient arriver après le vidage du
+        # tampon et se coller devant celle de :CM ("11N/A"), synchro alors affichée refusée.
+        self._cmd(f":Sr{Astro.fmt_ra_lx(ra)}", reply=True)
+        self._cmd(f":Sd{Astro.fmt_dec_lx(dec)}", reply=True)
         # Réponse OnStep : "N/A" = sync faite, "E<n>" = refus (voir firmware)
         resp = self._cmd(":CM").rstrip('#')
+        # "E9,<deg>" : synchro suspecte (trop loin du modèle), voir le firmware Teensy
         return "OK" if resp == "N/A" else resp
+
+    # ── Modèle de pointage, météo, PEC (firmware Teensy) ──────
+    def model_summary(self):
+        """Bilan du modèle (:GXMS#) ou None si le firmware ne le donne pas."""
+        r = self._cmd(":GXMS").rstrip('#')
+        try:
+            v = [float(x) for x in r.split(',')]
+        except ValueError:
+            return None
+        if len(v) < 10:
+            return None
+        d = dict(zip(("n", "terms", "rms", "haut", "est", "cone", "np", "tf", "fo", "last"), v))
+        d["n"] = int(d["n"]); d["terms"] = int(d["terms"])
+        return d
+
+    def has_model(self):
+        """Monture à modèle de pointage (Teensy). La Mega lit :CML# et :CMU# comme
+        :CM# (synchro sur la dernière cible) : ne jamais les lui envoyer."""
+        return self.model_summary() is not None
+
+    def model_undo(self):
+        """Retire la dernière synchro du modèle (:CMU#) ; False s'il n'y avait rien."""
+        if not self.has_model():
+            return False
+        return self._cmd(":CMU").rstrip('#') == "1"
+
+    def model_clear(self):
+        """Efface le modèle (:CML#) ; None si la monture n'a pas de modèle (Mega)."""
+        if not self.has_model():
+            return None
+        return self._cmd(":CML")
+
+    def set_weather(self, temp_c, press_hpa):
+        """Température et pression du lieu, pour la réfraction (:SX9A / :SX9B, comme OnStep)."""
+        a = self._cmd(f":SX9A,{temp_c:.1f}")
+        b = self._cmd(f":SX9B,{press_hpa:.0f}")
+        return a == "1" and b == "1"
+
+    def pec_status(self):
+        """État du PEC (:GXPE#) : dict(state, teeth, progress, amp, valid) ou None."""
+        r = self._cmd(":GXPE").rstrip('#').split(',')
+        if len(r) < 5 or len(r[0]) != 1 or r[0] not in "IpPrR":
+            return None
+        try:
+            return dict(state=r[0], teeth=int(r[1]), progress=int(r[2]), amp=float(r[3]), valid=r[4] == "1")
+        except ValueError:
+            return None
+
+    def pec(self, op):
+        """Commande PEC OnStep sans réponse : '+' lire, '-' arrêter, '/' enregistrer, 'Z' effacer."""
+        self._cmd(":$QZ" + op, reply=False)
 
     def parking(self):
         # v5.1 : :hP toujours (le fallback :PK n'est plus géré par aucune
@@ -1787,6 +1841,122 @@ TYPE_NAMES_BILINGUAL = {
     }
 }
 
+# Onglet « Précision » : modèle de pointage, météo (réfraction), PEC (firmware Teensy).
+PRECISION_TXT = {
+    "fr": {
+        "tab": " Précision ",
+        "model": "Modèle de pointage",
+        "undo": "Retirer la dernière étoile",
+        "clear": "Effacer le modèle",
+        "clear_ask": "Effacer toutes les étoiles du modèle de pointage ?",
+        "cleared": "Modèle de pointage effacé.",
+        "undo_ok": "Dernière étoile retirée du modèle.",
+        "undo_none": "Aucune étoile à retirer.",
+        "na": "Pas disponible avec ce firmware (monture Teensy seulement).",
+        "model_empty": "Aucune étoile synchronisée.",
+        "model_n": "{n} étoile(s), {k} défauts calculés",
+        "model_rms": "Erreur restante : {e}′",
+        "model_rms_na": "Erreur restante : il faut plus d'étoiles pour la mesurer",
+        "polar": "Axe polaire : {h}′ trop {hd}, {e}′ trop à l'{ed}",
+        "high": "haut", "low": "bas", "east": "est", "west": "ouest",
+        "tilt": "Axe vertical penché de {a}′ vers le {d}",
+        "dirs": ["nord", "nord-est", "est", "sud-est", "sud", "sud-ouest", "ouest", "nord-ouest"],
+        "cone": "Cône {c}′ · axes {n}′ · flexion {f}′",
+        "weather": "Réfraction (température, pression)",
+        "temp": "Température (°C)",
+        "press": "Pression (hPa)",
+        "weather_note": "Pression moyenne à {alt} m : {p} hPa. Envoyées à chaque connexion.",
+        "send": "Envoyer à la monture",
+        "press_alt": "Selon l'altitude",
+        "weather_bad": "Température ou pression illisible.",
+        "weather_log": "Météo : {t:.0f} °C, {p:.0f} hPa → {r}",
+        "weather_ok": "Réfraction calculée pour {t:.0f} °C et {p:.0f} hPa.",
+        "weather_fail": "La monture n'a pas accepté la météo (firmware Teensy seulement).",
+        "pec": "PEC (erreur périodique de la vis)",
+        "pec_rec": "Enregistrer",
+        "pec_play": "Lire",
+        "pec_stop": "Arrêter",
+        "pec_clear": "Effacer",
+        "pec_note": "Pour enregistrer : guidage en marche et stable, suivi sidéral, puis « Enregistrer ». "
+                    "Il dure un tour de vis, sans GoTo.",
+        "pec_rec_ask": "Le guidage doit tourner (PHD2, Ekos ou la fenêtre Guidage) et être stable.\n"
+                       "L'enregistrement dure un tour de vis : ne pas faire de GoTo pendant ce temps.\n\nCommencer ?",
+        "pec_clear_ask": "Effacer la courbe PEC enregistrée ?",
+        "pec_altaz": "Pas de PEC en alt-az : les deux axes suivent le ciel.",
+        "pec_noteeth": "Nombre de dents de la roue AD non réglé : à indiquer dans le configurateur (onglet Mécanique).",
+        "pec_teeth": "Roue de {n} dents",
+        "pec_playing": "Lecture en cours",
+        "pec_wait_play": "Lecture prête (attend le suivi)",
+        "pec_wait_rec": "Enregistrement prêt (attend le suivi sidéral)",
+        "pec_recording": "Enregistrement : {p} %",
+        "pec_off": "Courbe enregistrée, lecture arrêtée",
+        "pec_none": "Pas de courbe enregistrée",
+        "pec_amp": "Amplitude corrigée : {a}″ crête à crête",
+        "sync_suspect": "Synchronisation refusée : la monture pointe à {d}° de l'endroit où le modèle l'attend.\n"
+                        "Ce n'est sans doute pas la bonne étoile qui est centrée : vérifiez-la.\n\n"
+                        "Si c'est bien la bonne (la monture a été bougée), synchronisez encore une fois : "
+                        "l'ancien modèle sera effacé et l'on repartira de cette étoile.",
+        "sync_slewing": "Synchronisation refusée : un GoTo est en cours.",
+        "sync_reset": "La monture avait bougé : modèle de pointage repris de zéro sur cette position.",
+    },
+    "en": {
+        "tab": " Accuracy ",
+        "model": "Pointing model",
+        "undo": "Remove the last star",
+        "clear": "Clear the model",
+        "clear_ask": "Clear all stars of the pointing model?",
+        "cleared": "Pointing model cleared.",
+        "undo_ok": "Last star removed from the model.",
+        "undo_none": "No star to remove.",
+        "na": "Not available with this firmware (Teensy mount only).",
+        "model_empty": "No synced star.",
+        "model_n": "{n} star(s), {k} errors computed",
+        "model_rms": "Remaining error: {e}′",
+        "model_rms_na": "Remaining error: more stars are needed to measure it",
+        "polar": "Polar axis: {h}′ too {hd}, {e}′ too far {ed}",
+        "high": "high", "low": "low", "east": "east", "west": "west",
+        "tilt": "Vertical axis tilted {a}′ towards {d}",
+        "dirs": ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"],
+        "cone": "Cone {c}′ · axes {n}′ · flexure {f}′",
+        "weather": "Refraction (temperature, pressure)",
+        "temp": "Temperature (°C)",
+        "press": "Pressure (hPa)",
+        "weather_note": "Mean pressure at {alt} m: {p} hPa. Sent on every connection.",
+        "send": "Send to the mount",
+        "press_alt": "From altitude",
+        "weather_bad": "Temperature or pressure unreadable.",
+        "weather_log": "Weather: {t:.0f} °C, {p:.0f} hPa → {r}",
+        "weather_ok": "Refraction computed for {t:.0f} °C and {p:.0f} hPa.",
+        "weather_fail": "The mount did not accept the weather (Teensy firmware only).",
+        "pec": "PEC (periodic error of the worm)",
+        "pec_rec": "Record",
+        "pec_play": "Play",
+        "pec_stop": "Stop",
+        "pec_clear": "Clear",
+        "pec_note": "To record: guiding running and stable, sidereal tracking, then “Record”. "
+                    "It lasts one worm turn, without GoTo.",
+        "pec_rec_ask": "Guiding must be running (PHD2, Ekos or the Guiding window) and stable.\n"
+                       "Recording lasts one worm turn: no GoTo during that time.\n\nStart?",
+        "pec_clear_ask": "Clear the recorded PEC curve?",
+        "pec_altaz": "No PEC in alt-az: both axes follow the sky.",
+        "pec_noteeth": "Number of teeth of the RA wheel not set: enter it in the configurator (Mechanics tab).",
+        "pec_teeth": "{n}-tooth wheel",
+        "pec_playing": "Playing",
+        "pec_wait_play": "Ready to play (waiting for tracking)",
+        "pec_wait_rec": "Ready to record (waiting for sidereal tracking)",
+        "pec_recording": "Recording: {p} %",
+        "pec_off": "Curve recorded, playback stopped",
+        "pec_none": "No recorded curve",
+        "pec_amp": "Corrected amplitude: {a}″ peak to peak",
+        "sync_suspect": "Sync refused: the mount points {d}° away from where the model expects it.\n"
+                        "The centered star is probably not the right one: check it.\n\n"
+                        "If it is the right one (the mount was moved), sync once more: "
+                        "the old model will be cleared and we start again from this star.",
+        "sync_slewing": "Sync refused: a GoTo is in progress.",
+        "sync_reset": "The mount had moved: pointing model restarted from this position.",
+    },
+}
+
 TRANSLATIONS = {
     "en": {
         # App Title
@@ -2551,9 +2721,12 @@ class App(tk.Tk):
         self._td=tk.Frame(self._nb_right,bg=BG2); self._nb_right.add(self._td,text=" Dérotateur ")
         self._tf=tk.Frame(self._nb_right,bg=BG2); self._nb_right.add(self._tf,text=" Focuseur ")
         self._tl=tk.Frame(self._nb_right,bg=BG2); self._nb_right.add(self._tl,text=" Log LX200 ")
+        self._tp=tk.Frame(self._nb_right,bg=BG2); self._nb_right.add(self._tp,text=PRECISION_TXT["fr"]["tab"])
         self._build_derot(self._td)
         self._build_focus(self._tf)
         self._build_log(self._tl)
+        self._build_precision(self._tp)
+        self._nb_right.bind("<<NotebookTabChanged>>", lambda e: self._precision_refresh(True))
 
     def _build_derot(self, p):
         self._frm_derot_conn=self._frm(p,"Dérotateur"); self._frm_derot_conn.pack(fill=tk.X,padx=6,pady=4)
@@ -2782,6 +2955,8 @@ class App(tk.Tk):
                 lon = self.cfg.get("longitude", 4.836)
                 self.mount.set_location(lat, lon)
                 self._logw(t["log_site_sent"].format(lat=lat, lon=lon),"tx")
+                # Température et pression pour la réfraction (firmware Teensy ; sans effet sur la Mega)
+                self.after(0, lambda: self._send_weather(True))
                 off = self.mount.lst_offset_min(lon)
                 if off is not None and abs(off) > 2:
                     self._logw(t["log_lst_offset"].format(off=off),"err")
@@ -2968,9 +3143,11 @@ class App(tk.Tk):
             messagebox.showwarning(TRANSLATIONS[lang]["sync_frame"], TRANSLATIONS[lang]["msg_sync_invalid"]); return
         resp=self.mount.sync(ra,dec)
         fr = lang == "fr"
+        pt = PRECISION_TXT[lang]
         if resp == "OK":
             self._logw(f"Sync RA{Astro.fmt_ra(ra)} → {resp}","tx")
             self._status("Synchronisation effectuée." if fr else "Synchronization completed.")
+            self._precision_refresh(True)
             return
         self._logw(f"Sync RA{Astro.fmt_ra(ra)} → {resp}","err")
         if resp == "E6":
@@ -2984,6 +3161,12 @@ class App(tk.Tk):
                    "Near the pole, RA does not tell where the RA axis is. The mount keeps its "
                    "starting position, already right if it started parked.\n"
                    "To refine, sync on a lower star.")
+        elif resp.startswith("E9,"):
+            # Trop loin du modèle : sans doute pas la bonne étoile (firmware Teensy).
+            d = resp[3:]
+            msg = pt["sync_suspect"].format(d=d.replace(".", ",") if fr else d)
+        elif resp == "E5":
+            msg = pt["sync_slewing"]
         elif resp in ("E9", ""):
             msg = "Synchronisation refusée : régler la date et l'heure d'abord." if fr else \
                   "Sync refused: set the date and time first."
@@ -3363,11 +3546,204 @@ class App(tk.Tk):
             self._sky.refresh()
         if (self.cfg.get("mount_type", "AltAz") != "AltAz") != self._derot_eq:
             self._refresh_devices()           # type de monture lu à la connexion ou changé dans les paramètres
+        self._precision_refresh()
         self.after(1000,self._tick)
 
     # ════════════════════════════════════════════════════════════
     #  FERMETURE
     # ════════════════════════════════════════════════════════════
+    # ════════════════════════════════════════════════════════════
+    #  ONGLET PRÉCISION : modèle de pointage, météo, PEC (firmware Teensy)
+    # ════════════════════════════════════════════════════════════
+    def _build_precision(self, p):
+        W = 272
+        self._prec_busy = False
+        self._prec_last = 0.0
+        self._frm_model = self._frm(p, ""); self._frm_model.pack(fill=tk.X, padx=6, pady=4)
+        self._rv_model = tk.StringVar(value="—")
+        tk.Label(self._frm_model, textvariable=self._rv_model, bg=BG3, fg=TXT, font=FS, justify="left",
+                 anchor="w", wraplength=W, padx=6, pady=4).pack(fill=tk.X)
+        r = tk.Frame(self._frm_model, bg=BG2); r.pack(fill=tk.X, pady=2)
+        self._btn_model_undo = ttk.Button(r, command=self._model_undo); self._btn_model_undo.pack(fill=tk.X, pady=1)
+        self._btn_model_clear = ttk.Button(r, command=self._model_clear); self._btn_model_clear.pack(fill=tk.X, pady=1)
+
+        self._frm_weather = self._frm(p, ""); self._frm_weather.pack(fill=tk.X, padx=6, pady=4)
+        self._dv_temp = tk.DoubleVar(value=float(self.cfg.get("weather_temp", 10.0)))
+        self._dv_press = tk.DoubleVar(value=float(self.cfg.get("weather_press", 0) or self._press_from_alt()))
+        self._lbl_weather = []
+        for key, var, lo, hi, inc in (("temp", self._dv_temp, -40, 50, 1), ("press", self._dv_press, 500, 1100, 1)):
+            r = tk.Frame(self._frm_weather, bg=BG2); r.pack(fill=tk.X, pady=2)
+            l = tk.Label(r, bg=BG2, fg=DIM, font=FS, width=16, anchor="w"); l.pack(side=tk.LEFT)
+            self._lbl_weather.append(l)
+            ttk.Spinbox(r, from_=lo, to=hi, increment=inc, textvariable=var, width=7, font=FS).pack(side=tk.LEFT, padx=4)
+        self._lbl_weather_note = tk.Label(self._frm_weather, bg=BG2, fg=DIM, font=FS, justify="left",
+                                          anchor="w", wraplength=W)
+        self._lbl_weather_note.pack(fill=tk.X)
+        r = tk.Frame(self._frm_weather, bg=BG2); r.pack(fill=tk.X, pady=2)
+        self._btn_weather = ttk.Button(r, command=lambda: self._send_weather(False)); self._btn_weather.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._btn_press_alt = ttk.Button(r, command=self._press_reset); self._btn_press_alt.pack(side=tk.LEFT, padx=(4, 0))
+
+        self._frm_pec = self._frm(p, ""); self._frm_pec.pack(fill=tk.X, padx=6, pady=4)
+        self._rv_pec = tk.StringVar(value="—")
+        tk.Label(self._frm_pec, textvariable=self._rv_pec, bg=BG3, fg=TXT, font=FS, justify="left",
+                 anchor="w", wraplength=W, padx=6, pady=4).pack(fill=tk.X)
+        g = tk.Frame(self._frm_pec, bg=BG2); g.pack(fill=tk.X, pady=2)
+        self._btn_pec = {}
+        for i, op in enumerate(("/", "+", "-", "Z")):
+            g.columnconfigure(i % 2, weight=1, uniform="pec")
+            b = ttk.Button(g, command=lambda o=op: self._pec_cmd(o))
+            b.grid(row=i // 2, column=i % 2, sticky="ew", padx=1, pady=1)
+            self._btn_pec[op] = b
+        self._lbl_pec_note = tk.Label(self._frm_pec, bg=BG2, fg=DIM, font=FS, justify="left",
+                                      anchor="w", wraplength=W)
+        self._lbl_pec_note.pack(fill=tk.X)
+        self._translate_precision()
+
+    def _translate_precision(self):
+        t = PRECISION_TXT[self.cfg.get("language", "fr")]
+        self._frm_model.configure(text=f" {t['model']} ")
+        self._btn_model_undo.configure(text=t["undo"])
+        self._btn_model_clear.configure(text=t["clear"])
+        self._frm_weather.configure(text=f" {t['weather']} ")
+        self._lbl_weather[0].configure(text=t["temp"])
+        self._lbl_weather[1].configure(text=t["press"])
+        self._lbl_weather_note.configure(text=t["weather_note"].format(alt=int(self.cfg.get("altitude_m", 200)),
+                                                                       p=self._press_from_alt()))
+        self._btn_weather.configure(text=t["send"])
+        self._btn_press_alt.configure(text=t["press_alt"])
+        self._frm_pec.configure(text=f" {t['pec']} ")
+        for op, key in (("/", "pec_rec"), ("+", "pec_play"), ("-", "pec_stop"), ("Z", "pec_clear")):
+            self._btn_pec[op].configure(text=t[key])
+        self._lbl_pec_note.configure(text=t["pec_note"])
+
+    def _press_from_alt(self):
+        """Pression moyenne à l'altitude du lieu (atmosphère standard), en hPa."""
+        h = float(self.cfg.get("altitude_m", 200) or 0)
+        return round(1013.25 * (1.0 - 2.25577e-5 * h) ** 5.25588)
+
+    def _press_reset(self):
+        self._dv_press.set(self._press_from_alt())
+        self.cfg.set("weather_press", 0); self.cfg.save()
+
+    def _send_weather(self, quiet):
+        """Température et pression pour la réfraction (:SX9A / :SX9B), aussi envoyées à la connexion."""
+        t = PRECISION_TXT[self.cfg.get("language", "fr")]
+        try:
+            temp, press = float(self._dv_temp.get()), float(self._dv_press.get())
+        except (tk.TclError, ValueError):
+            if not quiet: messagebox.showwarning(t["weather"], t["weather_bad"])
+            return
+        if not quiet:
+            self.cfg.set("weather_temp", temp)
+            self.cfg.set("weather_press", 0 if round(press) == self._press_from_alt() else press)
+            self.cfg.save()
+        if not self.mount.state.connected or self.mount.state.sim_mode:
+            return
+        def job():
+            ok = self.mount.set_weather(temp, press)
+            self._logw(t["weather_log"].format(t=temp, p=press, r="OK" if ok else "—"), "tx" if ok else "err")
+            if not quiet:
+                self._status(t["weather_ok"].format(t=temp, p=press) if ok else t["weather_fail"])
+        threading.Thread(target=job, daemon=True).start()
+
+    def _precision_visible(self):
+        try:
+            return self._nb_right.index(self._nb_right.select()) == 3
+        except tk.TclError:
+            return False
+
+    def _precision_refresh(self, force=False):
+        """Relit le bilan du modèle et l'état du PEC (en fond, sans bloquer l'interface)."""
+        if self._prec_busy or not self.mount.state.connected or self.mount.state.sim_mode:
+            if not self.mount.state.connected:
+                self._rv_model.set("—"); self._rv_pec.set("—")
+            return
+        if not force and (not self._precision_visible() or time.time() - self._prec_last < 4.0):
+            return
+        self._prec_busy = True; self._prec_last = time.time()
+        def job():
+            try:
+                m = self.mount.model_summary(); pe = self.mount.pec_status()
+            finally:
+                self._prec_busy = False
+            self.after(0, lambda: self._precision_show(m, pe))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _precision_show(self, m, pe):
+        t = PRECISION_TXT[self.cfg.get("language", "fr")]
+        fr = self.cfg.get("language", "fr") == "fr"
+        def num(v, d=1):
+            s = f"{v:.{d}f}"
+            return s.replace(".", ",") if fr else s
+        mt = self.cfg.get("mount_type", "AltAz")
+        if m is None:
+            self._rv_model.set(t["na"])
+        elif m["n"] == 0:
+            self._rv_model.set(t["model_empty"])
+        else:
+            lines = [t["model_n"].format(n=m["n"], k=m["terms"])]
+            lines.append(t["model_rms"].format(e=num(m["rms"])) if m["rms"] >= 0 else t["model_rms_na"])
+            if m["n"] >= 2:
+                if mt == "AltAz":
+                    lines.append(t["tilt"].format(a=num(m["haut"]), d=t["dirs"][int(((m["est"] + 22.5) % 360) // 45)]))
+                else:
+                    h, e = m["haut"], m["est"]
+                    lines.append(t["polar"].format(
+                        h=num(abs(h)), hd=t["high"] if h > 0 else t["low"],
+                        e=num(abs(e)), ed=t["east"] if e > 0 else t["west"]))
+            if m["n"] >= 3:
+                lines.append(t["cone"].format(c=num(m["cone"]), n=num(m["np"]), f=num(m["tf"])))
+            self._rv_model.set("\n".join(lines))
+        if mt == "AltAz":
+            self._rv_pec.set(t["pec_altaz"])
+        elif pe is None:
+            self._rv_pec.set(t["na"])
+        elif pe["teeth"] == 0:
+            self._rv_pec.set(t["pec_noteeth"])
+        else:
+            st = {"P": t["pec_playing"], "p": t["pec_wait_play"], "r": t["pec_wait_rec"],
+                  "R": t["pec_recording"].format(p=pe["progress"])}.get(pe["state"],
+                  t["pec_off"] if pe["valid"] else t["pec_none"])
+            s = t["pec_teeth"].format(n=pe["teeth"]) + "\n" + st
+            if pe["valid"] and pe["state"] != "R":
+                s += "\n" + t["pec_amp"].format(a=num(pe["amp"]))
+            self._rv_pec.set(s)
+
+    def _model_undo(self):
+        t = PRECISION_TXT[self.cfg.get("language", "fr")]
+        if not self.mount.state.connected: return
+        def job():
+            ok = self.mount.model_undo()
+            self._logw(":CMU  " + (t["undo_ok"] if ok else t["undo_none"]), "tx" if ok else "err")
+            self._status(t["undo_ok"] if ok else t["undo_none"])
+            self.after(0, lambda: self._precision_refresh(True))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _model_clear(self):
+        t = PRECISION_TXT[self.cfg.get("language", "fr")]
+        if not self.mount.state.connected: return
+        if not messagebox.askyesno(t["model"], t["clear_ask"]): return
+        def job():
+            r = self.mount.model_clear()
+            if r is None:
+                self._status(t["na"]); return
+            self._logw(f":CML  {t['cleared']} → {r}", "tx")
+            self._status(t["cleared"])
+            self.after(0, lambda: self._precision_refresh(True))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _pec_cmd(self, op):
+        t = PRECISION_TXT[self.cfg.get("language", "fr")]
+        if not self.mount.state.connected: return
+        if op == "/" and not messagebox.askokcancel(t["pec"], t["pec_rec_ask"]): return
+        if op == "Z" and not messagebox.askyesno(t["pec"], t["pec_clear_ask"]): return
+        def job():
+            self.mount.pec(op)
+            self._logw(f":$QZ{op}", "tx")
+            time.sleep(0.3)
+            self.after(0, lambda: self._precision_refresh(True))
+        threading.Thread(target=job, daemon=True).start()
+
     # ════════════════════════════════════════════════════════════
     #  MODULE PHOTO (photo.py) : caméra, astrométrie, centrage
     # ════════════════════════════════════════════════════════════
@@ -3403,8 +3779,10 @@ class App(tk.Tk):
         return Astro.eq_to_horiz(*Astro.precess(ra, dec), lst, self.cfg.get("latitude", 45.764))
 
     def photo_clear_model(self):
-        """:CML efface les points de synchronisation du modèle (firmware Teensy)."""
-        resp = self.mount._cmd(":CML")
+        """:CML efface les points de synchronisation du modèle (firmware Teensy ; rien sur la Mega)."""
+        resp = self.mount.model_clear()
+        if resp is None:
+            return ""
         self.after(0, lambda: self._logw(f":CML  modèle de pointage effacé → {resp}", "tx"))
         return resp
 
@@ -3426,7 +3804,17 @@ class App(tk.Tk):
     def photo_sync(self, ra, dec):
         """Synchronisation sur la position résolue (J2000), appelée depuis le fil du module photo."""
         resp = self.mount.sync(ra, dec)
-        self.after(0, lambda: self._logw(f"Sync astrométrie  RA{Astro.fmt_ra(ra)} Dec{Astro.fmt_dec(dec)} → {resp}", "tx"))
+        self.after(0, lambda r=resp: self._logw(f"Sync astrométrie  RA{Astro.fmt_ra(ra)} Dec{Astro.fmt_dec(dec)} → {r}", "tx"))
+        if resp.startswith("E9,"):
+            # Refus « trop loin du modèle » : une position résolue par astrométrie ne se
+            # trompe pas d'étoile, c'est donc la monture qui a bougé. Refaite au même
+            # endroit, la synchro est acceptée et le firmware repart de zéro.
+            resp = self.mount.sync(ra, dec)
+            if resp == "OK":
+                resp = "RESET"
+                msg = PRECISION_TXT[self.cfg.get("language", "fr")]["sync_reset"]
+                self.after(0, lambda: (self._logw(msg, "err"), self._status(msg)))
+        self.after(0, lambda: self._precision_refresh(True))
         return resp
 
     def photo_goto(self, ra, dec, name):
@@ -3544,6 +3932,8 @@ class App(tk.Tk):
         self._nb_right.tab(0, text=TRANSLATIONS[lang]["derot_tab"])
         self._nb_right.tab(1, text=TRANSLATIONS[lang]["focus_tab"])
         self._nb_right.tab(2, text=TRANSLATIONS[lang]["log_tab"])
+        self._nb_right.tab(3, text=PRECISION_TXT[lang]["tab"])
+        self._translate_precision()
         
         # 4. Left Panel - Connexion / Control
         self._frm_conn.configure(text=f" {TRANSLATIONS[lang]['conn_frame']} ")
