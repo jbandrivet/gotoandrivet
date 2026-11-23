@@ -116,6 +116,12 @@ static bool synced=false;
 static bool parked=false;
 static bool atHome=false;
 static volatile bool guiding=false;   // ecrit aussi par l'ISR (fin d'impulsion)
+// Deplacement donne par le guidage (:Mg) depuis la derniere cible de suivi, en
+// millioniemes de pas (unite de az_accum/alt_accum), cumule par l'ISR. doTrack()
+// decale la cible d'autant : sans cela le servo prenait l'impulsion pour une
+// erreur et la defaisait pendant qu'elle durait (sur le vrai Teensy : 5 s de
+// guidage = 18-22" au lieu de 37,6"). Remis a zero a chaque nouvelle cible.
+static volatile int64_t guideSumAz = 0, guideSumAlt = 0;
 static volatile bool limitHit=false; // Volatile because modified in ISR
 static bool alarmActive = false;
 static bool buzzerEnabled = true;
@@ -839,6 +845,7 @@ static uint8_t trkEphRate = 0;
 static void setTrkRef(double ra_h, double dec_d, uint8_t rate, double eRA, double eDec) {
   trkRA = ra_h; trkDec = dec_d;
   trkEphRate = rate; trkEphRA = eRA; trkEphDec = eDec;
+  noInterrupts(); guideSumAz = 0; guideSumAlt = 0; interrupts();
 }
 
 // Toute nouvelle cible de suivi passe par ici (et non par trkRA = ...) : sinon,
@@ -2147,11 +2154,11 @@ void doTrackingISR() {
   // la CONTRIBUTION au mouvement est conditionnee par motionOK.
   long guideNetAz = 0, guideNetAlt = 0;
   if (guideTicksAz > 0) {
-    if (motionOK && azMove == 0) guideNetAz = guideAddAz;
+    if (motionOK && azMove == 0) { guideNetAz = guideAddAz; guideSumAz += guideNetAz; }
     if (--guideTicksAz == 0) guideAddAz = 0;
   }
   if (guideTicksAlt > 0) {
-    if (motionOK && altMove == 0) guideNetAlt = guideAddAlt;
+    if (motionOK && altMove == 0) { guideNetAlt = guideAddAlt; guideSumAlt += guideNetAlt; }
     if (--guideTicksAlt == 0) guideAddAlt = 0;
   }
   // Fin d'impulsion : guiding retombe ici et non dans doTrack(), qui sort en
@@ -2203,6 +2210,7 @@ void doTrackingISR() {
           guideTicksAlt = 0; guideAddAlt = 0;
           guiding = false;
           guidePendingRebase = false;
+          guideSumAz = 0; guideSumAlt = 0;
         } else {
           stepAxisAlt(d);
           altPos = nextAlt;
@@ -2550,9 +2558,10 @@ static void doTrack() {
   if(millis()-lastTrkMs<200)return;
   lastTrkMs=millis();
 
-  // Le servo (Kp) verrait la correction de guidage comme une erreur et la
-  // rattraperait. On recale donc la cible celeste sur la position atteinte,
-  // sans purger le filtre de lissage (contrairement a force_tracking_rebase).
+  // Fin d'impulsion : la cible celeste est recalee sur la position atteinte
+  // (setTrk remet guideSum a zero), sans purger le filtre de lissage
+  // (contrairement a force_tracking_rebase). Pendant l'impulsion, la cible est
+  // decalee de guideSum plus bas, pour que le servo ne la combatte pas.
   if (guidePendingRebase) {
     noInterrupts();
     bool busy = (guideTicksAz > 0 || guideTicksAlt > 0);
@@ -2632,6 +2641,11 @@ static void doTrack() {
   
   double tZ = trk_base_az + trk_speed_az * elapsed_lst;
   double tA = trk_base_alt + trk_speed_alt * elapsed_lst;
+  noInterrupts();
+  const int64_t gAz = guideSumAz, gAlt = guideSumAlt;
+  interrupts();
+  tZ += (double)gAz  / 1e6 / AZ_PPD;
+  tA += (double)gAlt / 1e6 / ALT_PPD;
   
   double steps_per_sec_az = (trk_speed_az * AZ_PPD) / 3600.0;
   double steps_per_sec_alt = (trk_speed_alt * ALT_PPD) / 3600.0;
